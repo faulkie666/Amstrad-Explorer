@@ -1,0 +1,11 @@
+/build*/
+/.cache/
+*.uf2
+*.elf
+*.map
+*.bin
+*.hex
+roms/*.rom
+roms/*.bin
+third_party/research/
+
