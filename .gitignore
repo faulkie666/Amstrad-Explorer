@@ -1,4 +1,5 @@
 /build*/
+/backups/
 /.cache/
 *.uf2
 *.elf
