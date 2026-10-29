@@ -1,6 +1,7 @@
 #include "cpc_core.h"
 #include "game_library.h"
 #include "launcher.h"
+#include "gameplay_input.h"
 #include "upload_protocol.h"
 
 #include <algorithm>
@@ -27,13 +28,15 @@ void put32(std::uint8_t* output, std::uint32_t value) {
 }
 
 void make_descriptor(std::uint8_t* descriptor, const char* id, const char* title,
-                     std::uint32_t offset, const std::uint8_t* snapshot) {
+                     std::uint32_t offset, const std::uint8_t* snapshot,
+                     std::uint8_t control_profile = 0) {
     std::memset(descriptor, 0, cpcexplorer::library::kDescriptorBytes);
     std::memcpy(descriptor, id, std::min<std::size_t>(std::strlen(id), 15));
     std::memcpy(descriptor + 16, title, std::min<std::size_t>(std::strlen(title), 39));
     descriptor[56] = 1;
     descriptor[57] = 64;
     descriptor[58] = snapshot[16];
+    descriptor[59] = control_profile;
     put32(descriptor + 60, offset);
     put32(descriptor + 64, cpcexplorer::library::kSnapshotBytes);
     put32(descriptor + 68,
@@ -117,7 +120,7 @@ int main() {
     std::memcpy(flash.data() + offset1, snapshot.data(), snapshot.size());
     std::memcpy(flash.data() + offset2, snapshot.data(), snapshot.size());
     make_descriptor(header + 64, "game_one", "Game One", offset0, flash.data() + offset0);
-    make_descriptor(header + 144, "game_two", "Game Two", offset1, flash.data() + offset1);
+    make_descriptor(header + 144, "game_two", "Game Two", offset1, flash.data() + offset1, 2);
     make_descriptor(header + 224, "game_bad", "Corrupted Game", offset2,
                     flash.data() + offset2);
     flash[offset2 + 300] ^= 0x80;  // payload no longer matches its descriptor checksum
@@ -130,7 +133,8 @@ int main() {
         !expect(view.declared_count() == 3, "declared entries") ||
         !expect(view.valid_count() == 2, "corrupt entry skipped") ||
         !expect(view.game(1, game) && std::strcmp(game.title, "Game Two") == 0,
-                "enumerate second valid game")) return 2;
+                "enumerate second valid game") ||
+        !expect(game.control_profile == 2, "catalog preserves generic control metadata")) return 2;
 
     launcher::configure_library(flash.data(), flash.size());
     if (!expect(launcher::entry_count() == 4, "built-ins plus library games") ||
@@ -139,7 +143,9 @@ int main() {
         !expect(std::strcmp(launcher::entry(1).display_name, "Knight Tyme") == 0,
                 "Knight Tyme remains second") ||
         !expect(std::strcmp(launcher::entry(2).display_name, "Game One") == 0,
-                "library follows built-ins")) return 3;
+                "library follows built-ins") ||
+        !expect(launcher::entry(3).control_profile == input::Profile::KeysZXSpace,
+                "launcher uses descriptor profile rather than game ID")) return 3;
 
     launcher::MenuController menu;
     menu.reset(0, 0);

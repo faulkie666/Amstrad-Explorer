@@ -67,7 +67,8 @@ bool valid_catalog_header(const std::uint8_t* header) {
 bool valid_descriptor(const std::uint8_t* descriptor) {
     if (masked_crc(descriptor, library::kDescriptorBytes, 72) != u32(descriptor + 72) ||
         !terminated_printable(descriptor, 16) || !terminated_printable(descriptor + 16, 40) ||
-        descriptor[56] != 1 || descriptor[57] != 64 || descriptor[58] == 0) return false;
+        descriptor[56] != 1 || descriptor[57] != 64 || descriptor[58] == 0 ||
+        descriptor[59] > 2) return false;
     const std::uint32_t offset = u32(descriptor + 60), length = u32(descriptor + 64);
     return (offset & 0xfffU) == 0 && offset >= library::kDataStart &&
            length == library::kSnapshotBytes && length <= library::kLibraryBytes - offset;
@@ -134,7 +135,8 @@ bool Installer::prepare_payload() {
     }
     auto* d = package_header_ + 16;
     if (masked_crc(d, 80, 72) != u32(d + 72) || d[56] != 1 || d[57] != 64 ||
-        d[58] == 0 || u32(d + 60) != 96 || u32(d + 64) != library::kSnapshotBytes ||
+        d[58] == 0 || d[59] > 2 || u32(d + 60) != 96 ||
+        u32(d + 64) != library::kSnapshotBytes ||
         !terminated_printable(d, 16) || !terminated_printable(d + 16, 40)) {
         fail("package_descriptor"); return false;
     }

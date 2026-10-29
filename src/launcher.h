@@ -3,6 +3,8 @@
 #include <cstddef>
 #include <cstdint>
 
+#include "gameplay_input.h"
+
 namespace cpcexplorer::launcher {
 
 enum class EntryType : std::uint8_t {
@@ -16,6 +18,7 @@ struct Entry {
     const char* snapshot_id;
     const std::uint8_t* snapshot_data;
     std::size_t snapshot_size;
+    input::Profile control_profile;
 };
 
 void configure_library(const std::uint8_t* bytes, std::size_t size);

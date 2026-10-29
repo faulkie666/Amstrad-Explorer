@@ -66,7 +66,7 @@ bool parse_descriptor(const std::uint8_t* descriptor, const std::uint8_t* storag
         !terminated_printable(descriptor, 16) ||
         !terminated_printable(descriptor + 16, 40) ||
         descriptor[56] != static_cast<std::uint8_t>(MachineType::Cpc464) ||
-        descriptor[57] != 64 || descriptor[58] == 0) return false;
+        descriptor[57] != 64 || descriptor[58] == 0 || descriptor[59] > 2) return false;
     const std::uint32_t offset = u32(descriptor + 60);
     const std::uint32_t length = u32(descriptor + 64);
     if (offset < minimum_offset || offset > maximum_offset ||
@@ -81,6 +81,7 @@ bool parse_descriptor(const std::uint8_t* descriptor, const std::uint8_t* storag
     result.machine = MachineType::Cpc464;
     result.ram_kib = descriptor[57];
     result.snapshot_version = descriptor[58];
+    result.control_profile = descriptor[59];
     result.data = payload;
     result.data_offset = offset;
     result.data_length = length;

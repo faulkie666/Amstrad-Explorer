@@ -48,6 +48,54 @@ cpc_t machine;
 std::uint64_t total_ticks;
 bool reference_frame_ready;
 EngineKind active_engine = EngineKind::Reference;
+AudioCallback audio_callback = nullptr;
+void* audio_callback_user = nullptr;
+AudioDiagnostics audio_diag{};
+#if defined(CPCEXPLORER_HOST_TESTS)
+testing::AyWriteCallback host_ay_write_callback = nullptr;
+void* host_ay_write_callback_user = nullptr;
+void trace_ay_bus(std::uint64_t cycle, std::uint64_t pins, const ay38910_t& ay) {
+    if (!host_ay_write_callback || !(pins & AY38910_BDIR)) return;
+    const auto value = AY38910_GET_DATA(pins);
+    const auto reg = (pins & AY38910_BC1) ? std::uint8_t{0xFF} : ay.addr;
+    host_ay_write_callback(cycle, reg, value, host_ay_write_callback_user);
+}
+#endif
+
+void core_audio_packet(const float* samples, int count, void*) {
+    audio_diag.samples += static_cast<std::uint64_t>(count);
+    for (int i = 0; i < count; ++i)
+        if (samples[i] > 0.0001f || samples[i] < -0.0001f) ++audio_diag.nonzero_samples;
+    if (audio_callback) audio_callback(samples, static_cast<std::size_t>(count), audio_callback_user);
+}
+
+void emit_psg_sample(cpc_t& sys) {
+    sys.audio.sample_buffer[sys.audio.sample_pos++] = sys.psg.sample;
+    if (sys.audio.sample_pos == sys.audio.num_samples) {
+        core_audio_packet(sys.audio.sample_buffer, sys.audio.num_samples, nullptr);
+        sys.audio.sample_pos = 0;
+    }
+}
+
+void reset_psg_phase(cpc_t& sys) {
+    for (auto& channel : sys.psg.tone) {
+        channel.counter = 0;
+        channel.bit = 0;
+    }
+    sys.psg.noise.counter = 0;
+    sys.psg.noise.bit = 0;
+    sys.psg.noise.rng = 1;
+    sys.psg.env.counter = 0;
+    sys.psg.env.shape_state = 0;
+    sys.psg.tick = 0;
+    sys.psg.sample_counter = sys.psg.sample_period;
+    sys.psg.sample = 0.0f;
+    sys.psg.dcadj_sum = 0.0f;
+    sys.psg.dcadj_pos = 0;
+    std::fill(std::begin(sys.psg.dcadj_buf), std::end(sys.psg.dcadj_buf), 0.0f);
+    sys.audio.sample_pos = 0;
+    std::fill(std::begin(sys.audio.sample_buffer), std::end(sys.audio.sample_buffer), 0.0f);
+}
 
 }  // namespace
 
@@ -58,6 +106,7 @@ static void reference_init() {
     desc.audio.num_samples = 128;
     desc.audio.sample_rate = 22050;
     desc.audio.volume = 0.0f;
+    desc.audio.callback.func = core_audio_packet;
     desc.roms.cpc464.os.ptr = const_cast<unsigned char*>(cpc464_os_rom);
     desc.roms.cpc464.os.size = sizeof(cpc464_os_rom);
     desc.roms.cpc464.basic.ptr = const_cast<unsigned char*>(cpc464_basic_rom);
@@ -67,6 +116,7 @@ static void reference_init() {
     // code for holding Shift by itself. Manic Miner uses bare Shift to jump.
     kbd_register_key(&machine.kbd, KeyShift, 2, 5, 0);
     cpc_reset(&machine);
+    reset_psg_phase(machine);
     total_ticks = 0;
     reference_frame_ready = false;
 }
@@ -74,6 +124,7 @@ static void reference_init() {
 static void reference_reset() {
     if (!machine.valid) { reference_init(); return; }
     cpc_reset(&machine);
+    reset_psg_phase(machine);
     total_ticks = 0;
     reference_frame_ready = false;
 }
@@ -88,6 +139,7 @@ static void reference_key_up(int key_code) { cpc_key_up(&machine, key_code); }
 
 static bool reference_quickload(const std::uint8_t* data, std::size_t size, bool start) {
     if ((data == nullptr) || (size == 0)) return false;
+    reset_psg_phase(machine);
     chips_range_t range{};
     range.ptr = const_cast<std::uint8_t*>(data);
     range.size = size;
@@ -177,11 +229,13 @@ struct FastRuntime {
     std::uint64_t instructions = 0;
     std::uint64_t peripheral_dispatches = 0;
     std::uint64_t reconstructed_frames = 0;
+    std::uint64_t psg_cycle = 0;
     std::uint64_t next_interrupt_cycle = kGateArrayInterruptPeriod;
     std::uint64_t next_frame_cycle = kCpcCyclesPerFrame;
     std::uint64_t next_crtc_line_cycle = kCpcCyclesPerScanline;
     unsigned crtc_vsync_remaining = 0;
     bool frame_ready = false;
+    bool audio_enabled = true;
     testing::FastBenchmarkMode benchmark_mode = testing::FastBenchmarkMode::Full;
     bool diagnostics_enabled = false;
     std::uint32_t last_emulated_us = 0;
@@ -195,6 +249,87 @@ struct FastRuntime {
 };
 
 FastRuntime fast;
+
+static void advance_fast_psg(std::uint64_t target_cycle) {
+    if (!fast.audio_enabled) {
+        fast.psg_cycle = target_cycle - (target_cycle & 3U);
+        return;
+    }
+    const auto ticks = static_cast<std::uint32_t>((target_cycle - fast.psg_cycle) / 4);
+    if (ticks == 0) return;
+
+    // The chips AY implementation is deliberately tick-oriented.  Calling it
+    // a million times per emulated second erased much of the fast-Z80 gain on
+    // RP2350, even though AY state changes only at /8, /16 and audio-sample
+    // boundaries.  Advance exactly between those observable boundaries.
+    auto& ay = machine.psg;
+    std::uint32_t remaining = ticks;
+    while (remaining != 0) {
+        const auto to_sample = static_cast<std::uint32_t>(
+            (ay.sample_counter + AY38910_FIXEDPOINT_SCALE - 1) /
+            AY38910_FIXEDPOINT_SCALE);
+        const std::uint32_t step = std::min(remaining, to_sample);
+        const std::uint32_t old_tick = ay.tick;
+        ay.tick += step;
+
+        const std::uint32_t tone_events = ((old_tick & 7U) + step) / 8U;
+        if (tone_events != 0) {
+            for (auto& channel : ay.tone) {
+                const std::uint32_t total = channel.counter + tone_events;
+                const std::uint32_t toggles = total / channel.period;
+                channel.counter = static_cast<std::uint16_t>(total % channel.period);
+                channel.bit ^= toggles & 1U;
+            }
+
+            const std::uint32_t noise_total = ay.noise.counter + tone_events;
+            std::uint32_t noise_toggles = noise_total / ay.noise.period;
+            ay.noise.counter = static_cast<std::uint16_t>(noise_total % ay.noise.period);
+            while (noise_toggles-- != 0) {
+                ay.noise.bit ^= 1U;
+                if (ay.noise.bit != 0) {
+                    ay.noise.rng ^= (((ay.noise.rng & 1U) ^
+                                      ((ay.noise.rng >> 3U) & 1U)) << 17U);
+                    ay.noise.rng >>= 1U;
+                }
+            }
+        }
+
+        const std::uint32_t envelope_events = ((old_tick & 15U) + step) / 16U;
+        if (envelope_events != 0) {
+            const std::uint32_t total = ay.env.counter + envelope_events;
+            std::uint32_t changes = total / ay.env.period;
+            ay.env.counter = static_cast<std::uint16_t>(total % ay.env.period);
+            while (changes-- != 0) {
+                if (!ay.env.shape_holding) {
+                    ay.env.shape_counter = (ay.env.shape_counter + 1U) & 0x1FU;
+                    if (ay.env.shape_hold && ay.env.shape_counter == 0x1FU)
+                        ay.env.shape_holding = true;
+                }
+                ay.env.shape_state =
+                    _ay38910_shapes[ay.env_shape_cycle][ay.env.shape_counter];
+            }
+        }
+
+        ay.sample_counter -= static_cast<int>(step * AY38910_FIXEDPOINT_SCALE);
+        if (ay.sample_counter <= 0) {
+            ay.sample_counter += ay.sample_period;
+            float mixed = 0.0f;
+            for (int i = 0; i < AY38910_NUM_CHANNELS; ++i) {
+                const auto& channel = ay.tone[i];
+                const float volume = (ay.reg[AY38910_REG_AMP_A + i] & (1U << 4U))
+                    ? _ay38910_volumes[ay.env.shape_state]
+                    : _ay38910_volumes[ay.reg[AY38910_REG_AMP_A + i] & 0x0FU];
+                const int enabled = (channel.bit | channel.tone_disable) &
+                    ((ay.noise.rng & 1U) | channel.noise_disable);
+                if (enabled) mixed += volume;
+            }
+            ay.sample = _ay38910_dcadjust(&ay, mixed) * ay.mag;
+            emit_psg_sample(machine);
+        }
+        remaining -= step;
+    }
+    fast.psg_cycle += static_cast<std::uint64_t>(ticks) * 4U;
+}
 
 #if defined(CPCEXPLORER_FAST_RAM_ACCESS)
 static std::uint8_t* contiguous_4k_page(mem_page_t* pages, unsigned first,
@@ -239,6 +374,7 @@ static void init_cpc_state(cpc_t& target) {
     desc.audio.num_samples = 128;
     desc.audio.sample_rate = 22050;
     desc.audio.volume = 0.0f;
+    desc.audio.callback.func = core_audio_packet;
     desc.roms.cpc464.os.ptr = const_cast<unsigned char*>(cpc464_os_rom);
     desc.roms.cpc464.os.size = sizeof(cpc464_os_rom);
     desc.roms.cpc464.basic.ptr = const_cast<unsigned char*>(cpc464_basic_rom);
@@ -246,10 +382,17 @@ static void init_cpc_state(cpc_t& target) {
     cpc_init(&target, &desc);
     kbd_register_key(&target.kbd, KeyShift, 2, 5, 0);
     cpc_reset(&target);
+    reset_psg_phase(target);
 }
 
 static std::uint64_t fast_io_transaction(cpc_t& sys, std::uint16_t port,
                                          bool read, std::uint8_t value) {
+    // Bring the PSG to the beginning of this I/O instruction before a PPI
+    // transaction can change an AY register.  Ordinary instructions do not
+    // make AY state observable, so they are accumulated until this boundary.
+    advance_fast_psg(fast.cycles);
+    std::uint8_t old_psg_regs[AY38910_NUM_REGISTERS];
+    std::memcpy(old_psg_regs, sys.psg.reg, sizeof(old_psg_regs));
     std::uint64_t pins = Z80_IORQ | static_cast<std::uint64_t>(port) |
                          (read ? Z80_RD : Z80_WR);
     Z80_SET_DATA(pins, value);
@@ -263,6 +406,9 @@ static std::uint64_t fast_io_transaction(cpc_t& sys, std::uint16_t port,
             if (sys.ppi.pins & I8255_PC7) ay_pins |= AY38910_BDIR;
             if (sys.ppi.pins & I8255_PC6) ay_pins |= AY38910_BC1;
             AY38910_SET_DATA(ay_pins, I8255_GET_PA(sys.ppi.pins));
+#if defined(CPCEXPLORER_HOST_TESTS)
+            trace_ay_bus(fast.cycles, ay_pins, sys.psg);
+#endif
             ay_pins = ay38910_iorq(&sys.psg, ay_pins);
             I8255_SET_PA(ppi_pins, AY38910_GET_DATA(ay_pins));
         }
@@ -276,6 +422,9 @@ static std::uint64_t fast_io_transaction(cpc_t& sys, std::uint16_t port,
             if (ppi_pins & I8255_PC7) ay_pins |= AY38910_BDIR;
             if (ppi_pins & I8255_PC6) ay_pins |= AY38910_BC1;
             AY38910_SET_DATA(ay_pins, I8255_GET_PA(ppi_pins));
+#if defined(CPCEXPLORER_HOST_TESTS)
+            trace_ay_bus(fast.cycles, ay_pins, sys.psg);
+#endif
             ay38910_iorq(&sys.psg, ay_pins);
         }
         kbd_set_active_columns(&sys.kbd, 1U << (I8255_GET_PC(ppi_pins) & 0x0F));
@@ -300,6 +449,11 @@ static std::uint64_t fast_io_transaction(cpc_t& sys, std::uint16_t port,
         if (pins & Z80_A9) crtc_pins |= MC6845_RW;
         if (pins & Z80_A8) crtc_pins |= MC6845_RS;
         pins = mc6845_iorq(&sys.crtc, crtc_pins) & Z80_PIN_MASK;
+    }
+    // Port A is refreshed by keyboard reads and is not a sound-register write.
+    // Count only changed tone/noise/mixer/volume/envelope registers 0..13.
+    if (std::memcmp(old_psg_regs, sys.psg.reg, AY38910_REG_IO_PORT_A) != 0) {
+        ++audio_diag.register_writes;
     }
     return pins;
 }
@@ -329,6 +483,7 @@ static void fast_intack(void* opaque, int) {
 
 static void reset_fast_timing() {
     fast.cycles = fast.cycle_budget = fast.instructions = 0;
+    fast.psg_cycle = 0;
     fast.peripheral_dispatches = fast.reconstructed_frames = 0;
     fast.next_interrupt_cycle = kGateArrayInterruptPeriod;
     fast.next_frame_cycle = kCpcCyclesPerFrame;
@@ -358,12 +513,14 @@ static void fast_init() {
     fast.cpu = fast_z80_create(&callbacks);
     assert(fast.cpu != nullptr);
     fast.benchmark_mode = testing::FastBenchmarkMode::Full;
+    fast.audio_enabled = true;
     reload_fast_cpu();
 }
 
 static void fast_reset() {
     if (!fast.cpu) { fast_init(); return; }
     cpc_reset(&machine);
+    reset_psg_phase(machine);
     reload_fast_cpu();
 }
 
@@ -479,6 +636,7 @@ static void fast_run_us(std::uint32_t microseconds) {
 #endif
         }
     }
+    advance_fast_psg(fast.cycles);
     kbd_update(&machine.kbd, microseconds);
 #if defined(CPCEXPLORER_FAST_DIAGNOSTICS)
     if (fast.diagnostics_enabled) {
@@ -496,6 +654,7 @@ static void fast_key_up(int key_code) { cpc_key_up(&machine, key_code); }
 
 static bool fast_quickload(const std::uint8_t* data, std::size_t size, bool start) {
     if (!data || size == 0) return false;
+    reset_psg_phase(machine);
     chips_range_t range{const_cast<std::uint8_t*>(data), size};
     if (!cpc_quickload(&machine, range, start)) return false;
     reload_fast_cpu();
@@ -524,6 +683,7 @@ static Diagnostics fast_diagnostics() {
 
 namespace testing {
 void set_fast_benchmark_mode(FastBenchmarkMode mode) { fast.benchmark_mode = mode; }
+void set_fast_audio_enabled(bool enabled) { fast.audio_enabled = enabled; }
 }  // namespace testing
 
 #endif
@@ -550,6 +710,7 @@ const char* engine_name(EngineKind engine) {
 }
 
 void init() {
+    audio_diag = {};
 #if defined(CPCEXPLORER_FAST_ENGINE)
     if (active_engine == EngineKind::Fast) { fast_init(); return; }
 #endif
@@ -557,6 +718,7 @@ void init() {
 }
 
 void reset() {
+    audio_diag = {};
 #if defined(CPCEXPLORER_FAST_ENGINE)
     if (active_engine == EngineKind::Fast) { fast_reset(); return; }
 #endif
@@ -646,6 +808,38 @@ Diagnostics diagnostics() {
     if (active_engine == EngineKind::Fast) return fast_diagnostics();
 #endif
     return reference_diagnostics();
+}
+
+void set_audio_callback(AudioCallback callback, void* user) {
+    audio_callback = callback; audio_callback_user = user;
+}
+AudioDiagnostics audio_diagnostics() { return audio_diag; }
+
+namespace testing {
+void set_ay_write_callback(AyWriteCallback callback, void* user) {
+#if defined(CPCEXPLORER_HOST_TESTS)
+    host_ay_write_callback = callback;
+    host_ay_write_callback_user = user;
+#else
+    (void)callback;
+    (void)user;
+#endif
+}
+void ay_write_register(std::uint8_t reg, std::uint8_t value) {
+    if (reg < AY38910_NUM_REGISTERS) { ay38910_set_register(&machine.psg, reg, value); ++audio_diag.register_writes; }
+}
+std::uint8_t ay_read_register(std::uint8_t reg) {
+    return reg < AY38910_NUM_REGISTERS ? machine.psg.reg[reg] : 0xff;
+}
+void ay_advance_ticks(std::uint32_t ticks) {
+#if defined(CPCEXPLORER_FAST_ENGINE)
+    if (active_engine == EngineKind::Fast) {
+        advance_fast_psg(fast.psg_cycle + static_cast<std::uint64_t>(ticks) * 4U);
+        return;
+    }
+#endif
+    while (ticks--) if (ay38910_tick(&machine.psg)) emit_psg_sample(machine);
+}
 }
 
 static const std::uint8_t* reference_framebuffer() { return machine.fb; }

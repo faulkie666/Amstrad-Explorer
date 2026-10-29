@@ -1,7 +1,6 @@
 #pragma once
 
 #include <cstdint>
-#include <string_view>
 
 namespace cpcexplorer::input {
 
@@ -29,7 +28,10 @@ struct Transition {
     std::uint8_t held = 0;
 };
 
-Profile profile_for_game(std::string_view game_id);
+// New library entries carry this value in descriptor byte 59.  Only the
+// pre-metadata Manic Miner entry needs the narrowly scoped legacy fallback.
+Profile profile_from_metadata(std::uint8_t value);
+Profile legacy_profile_for_payload_crc(std::uint32_t payload_crc);
 KeyBindings bindings(Profile profile);
 
 class Adapter {

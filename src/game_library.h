@@ -33,6 +33,7 @@ struct GameInfo {
     MachineType machine = MachineType::Cpc464;
     std::uint8_t ram_kib = 0;
     std::uint8_t snapshot_version = 0;
+    std::uint8_t control_profile = 0;
     const std::uint8_t* data = nullptr;
     std::uint32_t data_offset = 0;
     std::uint32_t data_length = 0;

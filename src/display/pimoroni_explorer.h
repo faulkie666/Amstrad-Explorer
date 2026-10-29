@@ -27,6 +27,8 @@ pico_board_cmake_set(PICO_PLATFORM, rp2350)
 #define PIMORONI_EXPLORER_SWITCH_X_PIN       17
 #define PIMORONI_EXPLORER_SWITCH_Y_PIN       18
 #define PIMORONI_EXPLORER_SWITCH_Z_PIN       19
+#define PIMORONI_EXPLORER_PWM_AUDIO_PIN       12
+#define PIMORONI_EXPLORER_SPEAKER_AMP_ENABLE_PIN 13
 
 /* Treat the active-high LCD backlight as the board LED for bring-up. */
 #ifndef PICO_DEFAULT_LED_PIN

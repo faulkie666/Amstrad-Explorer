@@ -4,6 +4,9 @@
 #include "game_library.h"
 #include "gameplay_input.h"
 #include "launcher.h"
+#if defined(CPCEXPLORER_AY_AUDIO)
+#include "audio_output.h"
+#endif
 #if defined(CPCEXPLORER_PERF_DIAGNOSTICS)
 #include "performance_metrics.h"
 #endif
@@ -334,6 +337,15 @@ void draw_upload_progress(std::uint32_t received, std::uint32_t expected) {
     }
 #endif
     cpcexplorer::init();
+#if defined(CPCEXPLORER_AY_AUDIO)
+    if (cpcexplorer::audio::init(cpcexplorer::AudioSampleRate)) {
+        cpcexplorer::set_audio_callback([](const float* samples, std::size_t count, void*) {
+            cpcexplorer::audio::submit(samples, count);
+        });
+    } else {
+        std::printf("audio=disabled reason=no_dma_channel\n");
+    }
+#endif
     bool loaded = true;
     if (entry.type == cpcexplorer::launcher::EntryType::Snapshot) {
         if (entry.snapshot_data != nullptr) {
@@ -359,8 +371,7 @@ void draw_upload_progress(std::uint32_t received, std::uint32_t expected) {
     fill_black();
 #if defined(CPCEXPLORER_MENU) || defined(CPCEXPLORER_LIBRARY)
     cpcexplorer::input::Adapter gameplay_input;
-    const auto gameplay_profile = cpcexplorer::input::profile_for_game(
-        entry.snapshot_id == nullptr ? "" : entry.snapshot_id);
+    const auto gameplay_profile = entry.control_profile;
     gameplay_input.reset(gameplay_profile, read_menu_buttons());
 #endif
     absolute_time_t next = get_absolute_time();
@@ -464,6 +475,28 @@ void draw_upload_progress(std::uint32_t received, std::uint32_t expected) {
                         ? length : static_cast<int>(sizeof(telemetry) - 1);
                     stdio_put_string(telemetry, bounded_length, false, false);
                 }
+#if defined(CPCEXPLORER_AY_AUDIO)
+                const auto ay_stats = cpcexplorer::audio_diagnostics();
+                const auto output_stats = cpcexplorer::audio::diagnostics();
+                std::memset(telemetry, 0, sizeof(telemetry));
+                const int audio_length = std::snprintf(
+                    telemetry, sizeof(telemetry),
+                    "CPCAUDIO samples=%llu nonzero=%llu writes=%llu submitted=%u "
+                    "played=%u underruns=%u overruns=%u\n",
+                    static_cast<unsigned long long>(ay_stats.samples),
+                    static_cast<unsigned long long>(ay_stats.nonzero_samples),
+                    static_cast<unsigned long long>(ay_stats.register_writes),
+                    static_cast<unsigned>(output_stats.submitted),
+                    static_cast<unsigned>(output_stats.played),
+                    static_cast<unsigned>(output_stats.underruns),
+                    static_cast<unsigned>(output_stats.overruns));
+                if (audio_length > 0) {
+                    const int bounded_audio_length =
+                        audio_length < static_cast<int>(sizeof(telemetry))
+                            ? audio_length : static_cast<int>(sizeof(telemetry) - 1);
+                    stdio_put_string(telemetry, bounded_audio_length, false, false);
+                }
+#endif
             }
         }
 #endif

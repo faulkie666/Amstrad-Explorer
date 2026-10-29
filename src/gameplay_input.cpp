@@ -4,9 +4,19 @@
 
 namespace cpcexplorer::input {
 
-Profile profile_for_game(std::string_view game_id) {
-    if (game_id == "manic_miner") return Profile::KeysQWShift;
-    if (game_id == "dizzy") return Profile::KeysZXSpace;
+Profile profile_from_metadata(std::uint8_t value) {
+    if (value <= static_cast<std::uint8_t>(Profile::KeysZXSpace))
+        return static_cast<Profile>(value);
+    return Profile::None;
+}
+
+Profile legacy_profile_for_payload_crc(std::uint32_t payload_crc) {
+    // The physically installed Manic Miner package predates descriptor
+    // profiles, as does the already-approved first Dizzy package. Their
+    // validated snapshot fingerprints are the compatibility bridge; no
+    // catalog/game ID controls input selection.
+    if (payload_crc == 0x9584cfc4U) return Profile::KeysQWShift;
+    if (payload_crc == 0x1e76d62fU) return Profile::KeysZXSpace;
     return Profile::None;
 }
 

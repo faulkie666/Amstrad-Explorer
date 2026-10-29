@@ -7,8 +7,8 @@
 [![RP2350](https://img.shields.io/badge/target-RP2350-C51A4A?style=for-the-badge&logo=raspberrypi&logoColor=white)](https://www.raspberrypi.com/products/rp2350/)
 [![CPC 464](https://img.shields.io/badge/system-Amstrad_CPC_464-1E90FF?style=for-the-badge)](#emulated-hardware)
 [![C++20](https://img.shields.io/badge/C%2B%2B-20-00599C?style=for-the-badge&logo=cplusplus&logoColor=white)](CMakeLists.txt)
-[![Firmware](https://img.shields.io/badge/firmware-0.4.10-8A2BE2?style=for-the-badge)](docs/STAGE4F6_SRAM_Z80_EXPERIMENT.md)
-[![Tests](https://img.shields.io/badge/host_tests-11%2F11_passing-2EA44F?style=for-the-badge)](#verification)
+[![Firmware](https://img.shields.io/badge/firmware-0.4.11-8A2BE2?style=for-the-badge)](docs/STAGE4G21_DIZZY_CANDIDATE.md)
+[![Tests](https://img.shields.io/badge/host_tests-16%2F16_passing-2EA44F?style=for-the-badge)](#verification)
 [![License](https://img.shields.io/badge/license-GPLv3-F4C430?style=for-the-badge&logo=gnu&logoColor=black)](LICENSE)
 
 **Real CPC ROM execution · fast Z80 engine · native 320×240 display · persistent USB game library**
@@ -23,6 +23,10 @@ games in a transactional on-device library.
 The project includes both a cycle-stepped reference emulator and a faster,
 instruction-oriented engine. The reference remains available for deterministic
 comparison while the fast engine provides the practical hardware path.
+
+![Manic Miner running in the Central Cavern with active-display fitting](docs/images/cpc-explorer-manic-miner.png)
+
+<p align="center"><em>Manic Miner running through the fast CPC engine with the 320×230 active-display fit.</em></p>
 
 > [!IMPORTANT]
 > CPC ROMs and game data are not distributed in this repository. You must
@@ -42,10 +46,13 @@ comparison while the fast engine provides the practical hardware path.
 - Protected firmware, catalog, payload and RP2350-E10 flash regions.
 - Windows packaging, inspection, detection, upload and removal tools.
 - USB performance telemetry for physical CPC-speed measurements.
+- AY-3-8912 PCM generation with host WAV and register-trace diagnostics.
 
 ## Current hardware status
 
-The current physically tested baseline is `0.4.10-stage4f6sramstep`.
+The current physical baseline is `0.4.11-stage4g21dizzy`. It retains the
+Stage 4F.6 SRAM Z80 optimisation and adds descriptor-driven gameplay control
+profiles without changing the flash layout or execution clock.
 
 | Area | Status |
 |---|---|
@@ -56,7 +63,8 @@ The current physically tested baseline is `0.4.10-stage4f6sramstep`.
 | USB protocol | Detect, status, list, upload and remove verified |
 | Flash identity | Winbond EF-40-18, 16 MiB |
 | E10 protection | Final 64 KiB permanently excluded from game storage |
-| Host regression suite | 11/11 passing |
+| Generic controls | Descriptor-driven profiles with legacy package fallback |
+| Host regression suite | 16/16 passing |
 
 Measured on the Explorer at 150 MHz with Manic Miner:
 
@@ -69,6 +77,12 @@ Measured on the Explorer at 150 MHz with Manic Miner:
 
 These are physical measurements, not desktop benchmark projections. The
 reference and fast-engine investigation history is documented under [`docs/`](docs/).
+
+AY audio remains host-verified development work and is not part of the current
+physical baseline. Knight Tyme produces a sustained three-channel test passage,
+while Manic Miner produces continuous one-channel music. The validated audio
+path, game traces and deployment hold are documented in
+[Stage 4H.2](docs/STAGE4H2_MUSIC_GAME.md).
 
 ## Controls
 
@@ -196,12 +210,12 @@ launcher behavior, library parsing, transactional upload/removal, corruption
 and interruption recovery, importer validation, UF2/E10 policy, gameplay input,
 display fitting and performance telemetry.
 
-## Build the Stage 4F.6 firmware
+## Build the Stage 4G.2.1 firmware
 
 Set `PICO_SDK_PATH`, provide the ignored ROM and Knight Tyme snapshot, then run:
 
 ```powershell
-cmake -S . -B build-rp2350-stage4f6-sram-step -G Ninja `
+cmake -S . -B build-rp2350-stage4g21-dizzy -G Ninja `
   -DCMAKE_BUILD_TYPE=Release `
   -DCPCEXPLORER_BUILD_FIRMWARE=ON `
   -DPICO_BOARD=pimoroni_explorer `
@@ -209,9 +223,10 @@ cmake -S . -B build-rp2350-stage4f6-sram-step -G Ninja `
   -DCPCEXPLORER_ENABLE_FAST_ENGINE=ON `
   -DCPCEXPLORER_DEFAULT_ENGINE=FAST `
   -DCPCEXPLORER_STAGE4F6_SRAM_STEP=ON `
+  -DCPCEXPLORER_STAGE4G21_DIZZY_CONTROLS=ON `
   -DCPCEXPLORER_FAST_PRESENTATION_DIVISOR=4
 
-cmake --build build-rp2350-stage4f6-sram-step
+cmake --build build-rp2350-stage4g21-dizzy
 ```
 
 Post-link checks reject firmware outside the 4 MiB reservation and verify that
@@ -286,7 +301,7 @@ catalog erases, catalog programming, final activation, removal recovery,
 generation selection, duplicate IDs, CRC failures, overflow boundaries and
 protected-region overlap.
 
-The current host tree passes all 11 configured tests. Fast-engine integration
+The current host tree passes all 16 configured tests. Fast-engine integration
 has separate deterministic comparisons against the reference engine for BASIC,
 Knight Tyme and Manic Miner.
 
@@ -301,6 +316,10 @@ Knight Tyme and Manic Miner.
 - [Stage 4F.6 SRAM Z80 experiment](docs/STAGE4F6_SRAM_Z80_EXPERIMENT.md)
 - [Arcade collection assessment](docs/STAGE4G1_ARCADE_EXPANSION.md)
 - [Generic controls and Chuckie Egg feasibility](docs/STAGE4G2_GENERIC_CONTROLS_CHUCKIE.md)
+- [Stage 4G.2.1 control-profile firmware](docs/STAGE4G21_DIZZY_CANDIDATE.md)
+- [AY audio implementation](docs/STAGE4H1_AY_AUDIO.md)
+- [AY audio diagnosis](docs/STAGE4H1A_AY_DIAGNOSIS.md)
+- [Verified game-music capture](docs/STAGE4H2_MUSIC_GAME.md)
 
 ## Licensing
 

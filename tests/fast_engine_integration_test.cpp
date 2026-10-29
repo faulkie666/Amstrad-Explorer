@@ -128,11 +128,13 @@ BenchResult benchmark(cpcexplorer::EngineKind engine,
                       const std::vector<std::uint8_t>* snapshot,
                       cpcexplorer::testing::FastBenchmarkMode mode =
                           cpcexplorer::testing::FastBenchmarkMode::Full,
-                      int frames = 50) {
+                      int frames = 50, bool audio_enabled = true) {
     cpcexplorer::select_engine(engine); cpcexplorer::init();
     if (snapshot) cpcexplorer::load_sna(snapshot->data(), snapshot->size());
-    if (engine == cpcexplorer::EngineKind::Fast)
+    if (engine == cpcexplorer::EngineKind::Fast) {
         cpcexplorer::testing::set_fast_benchmark_mode(mode);
+        cpcexplorer::testing::set_fast_audio_enabled(audio_enabled);
+    }
     const auto start = Clock::now();
     run_frames(frames);
     const auto elapsed = std::chrono::duration<double, std::milli>(Clock::now() - start).count();
@@ -291,6 +293,14 @@ int main() {
     component_cost("basic", nullptr);
     component_cost("knight_tyme", &knight);
     component_cost("manic_miner", &manic);
+    const auto manic_without_audio = benchmark(cpcexplorer::EngineKind::Fast, &manic,
+        cpcexplorer::testing::FastBenchmarkMode::Full, 250, false);
+    const auto manic_with_audio = benchmark(cpcexplorer::EngineKind::Fast, &manic,
+        cpcexplorer::testing::FastBenchmarkMode::Full, 250, true);
+    std::printf("ENGINE_AUDIO_COST game=manic_miner emulated_ms=5000 disabled_ms=%.3f enabled_ms=%.3f overhead_pct=%.3f\n",
+        manic_without_audio.milliseconds, manic_with_audio.milliseconds,
+        100.0 * (manic_with_audio.milliseconds - manic_without_audio.milliseconds) /
+            manic_without_audio.milliseconds);
 #if !defined(CPCEXPLORER_FAST_RAM_VERIFY)
     if (!expect(reference_manic.milliseconds / fast_manic.milliseconds >= 4.5,
                 "integrated fast engine retains the Stage 4E performance gain")) return 9;

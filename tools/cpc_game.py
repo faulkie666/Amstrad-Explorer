@@ -28,6 +28,8 @@ SNA_MACHINE_NAMES = {
     5: "CPC464 Plus",
     6: "GX4000",
 }
+CONTROL_PROFILES = {"none": 0, "qw-shift": 1, "zx-space": 2}
+CONTROL_PROFILE_NAMES = {value: name for name, value in CONTROL_PROFILES.items()}
 
 
 def validate_snapshot(data: bytes) -> int:
@@ -60,14 +62,16 @@ def checked_text(value: str, field: str, maximum: int) -> bytes:
     return encoded + bytes(maximum - len(encoded))
 
 
-def package_snapshot(data: bytes, game_id: str, title: str) -> bytes:
+def package_snapshot(data: bytes, game_id: str, title: str, controls: str = "none") -> bytes:
     version = validate_snapshot(data)
     if not re.fullmatch(r"[a-z0-9][a-z0-9_-]{0,14}", game_id):
         raise ValueError("game ID must be 1..15 lowercase ASCII letters/digits/_/-")
     descriptor = bytearray(DESCRIPTOR_BYTES)
     descriptor[0:16] = checked_text(game_id, "game ID", 16)
     descriptor[16:56] = checked_text(title, "title", 40)
-    descriptor[56:60] = bytes((1, 64, version, 0))  # CPC464, 64 KiB, SNA version, flags
+    if controls not in CONTROL_PROFILES:
+        raise ValueError(f"unsupported control profile {controls!r}")
+    descriptor[56:60] = bytes((1, 64, version, CONTROL_PROFILES[controls]))
     struct.pack_into("<III", descriptor, 60, PAYLOAD_OFFSET, len(data), zlib.crc32(data))
     struct.pack_into("<I", descriptor, 72, zlib.crc32(descriptor))
     total = PAYLOAD_OFFSET + len(data)
@@ -93,12 +97,15 @@ def parse_package(data: bytes) -> dict[str, object]:
     if zlib.crc32(payload) != expected_payload_crc:
         raise ValueError("snapshot checksum mismatch")
     snapshot_version = validate_snapshot(payload)
+    if descriptor[59] not in CONTROL_PROFILE_NAMES:
+        raise ValueError(f"unsupported control profile value {descriptor[59]}")
     return {
         "id": bytes(descriptor[0:16]).split(b"\0", 1)[0].decode("ascii"),
         "title": bytes(descriptor[16:56]).split(b"\0", 1)[0].decode("ascii"),
         "machine": "CPC464",
         "ram_kib": descriptor[57],
         "snapshot_version": snapshot_version,
+        "controls": CONTROL_PROFILE_NAMES[descriptor[59]],
         "payload_bytes": length,
         "payload_crc32": f"{expected_payload_crc:08x}",
         "package_crc32": f"{zlib.crc32(data):08x}",
@@ -218,6 +225,7 @@ def main(argv: list[str] | None = None) -> int:
     make.add_argument("snapshot", type=Path)
     make.add_argument("--id", required=True)
     make.add_argument("--title", required=True)
+    make.add_argument("--controls", choices=tuple(CONTROL_PROFILES), default="none")
     make.add_argument("--output", required=True, type=Path)
     knight = sub.add_parser("import-knight", help="run the proven Knight Tyme host loader, then package")
     knight.add_argument("source_directory", type=Path)
@@ -241,7 +249,8 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     try:
         if args.command == "import-sna":
-            packaged = package_snapshot(args.snapshot.read_bytes(), args.id, args.title)
+            packaged = package_snapshot(args.snapshot.read_bytes(), args.id, args.title,
+                                         args.controls)
             args.output.parent.mkdir(parents=True, exist_ok=True)
             args.output.write_bytes(packaged)
             info = parse_package(packaged)

@@ -16,14 +16,18 @@ int main() {
     using namespace cpcexplorer;
     using namespace cpcexplorer::input;
 
-    if (!expect(profile_for_game("manic_miner") == Profile::KeysQWShift,
-                "Manic Miner ID selects its profile") ||
-        !expect(profile_for_game("dizzy") == Profile::KeysZXSpace,
-                "Dizzy ID selects reusable Z/X/Space profile") ||
-        !expect(profile_for_game("knight_tyme") == Profile::None,
-                "Knight Tyme remains unprofiled") ||
-        !expect(profile_for_game("unknown") == Profile::None,
-                "unknown games remain unprofiled")) return 1;
+    if (!expect(profile_from_metadata(2) == Profile::KeysZXSpace,
+                "descriptor metadata selects reusable Z/X/Space profile") ||
+        !expect(profile_from_metadata(1) == Profile::KeysQWShift,
+                "descriptor metadata selects Q/W/Shift profile") ||
+        !expect(profile_from_metadata(99) == Profile::None,
+                "invalid metadata fails closed") ||
+        !expect(legacy_profile_for_payload_crc(0x9584cfc4U) == Profile::KeysQWShift,
+                "pre-metadata Manic snapshot retains its legacy profile") ||
+        !expect(legacy_profile_for_payload_crc(0x1e76d62fU) == Profile::KeysZXSpace,
+                "approved pre-metadata Dizzy snapshot selects Z/X/Space") ||
+        !expect(legacy_profile_for_payload_crc(0) == Profile::None,
+                "unknown payloads remain unprofiled")) return 1;
 
     Adapter input;
     const auto manic = bindings(Profile::KeysQWShift);
@@ -68,6 +72,6 @@ int main() {
     if (!expect(event.pressed == 0 && event.released == 0 && event.held == 0,
                 "unprofiled games receive no gameplay keys")) return 10;
 
-    std::puts("PASS: ID profile, launch suppression, level holds/releases, rapid transitions");
+    std::puts("PASS: metadata profiles, legacy Manic fallback, holds/releases and transitions");
     return 0;
 }

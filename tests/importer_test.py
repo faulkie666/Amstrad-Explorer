@@ -31,6 +31,21 @@ with tempfile.TemporaryDirectory() as directory:
         raise SystemExit("deterministic valid import failed")
     if run("inspect", str(first)).returncode:
         raise SystemExit("package inspection failed")
+    controlled = root / "controlled.cpcgame"
+    controlled_result = run(*arguments, "--controls", "zx-space", "--output", str(controlled))
+    controlled_inspect = run("inspect", str(controlled))
+    if controlled_result.returncode or "controls: zx-space" not in controlled_inspect.stdout:
+        raise SystemExit("generic control metadata was not packaged and inspected")
+    corrupt = bytearray(controlled.read_bytes())
+    corrupt[16 + 59] = 0xff
+    corrupt[16 + 72:16 + 76] = bytes(4)
+    import zlib
+    corrupt[16 + 72:16 + 76] = zlib.crc32(corrupt[16:96]).to_bytes(4, "little")
+    invalid_controls = root / "invalid-controls.cpcgame"
+    invalid_controls.write_bytes(corrupt)
+    rejected_controls = run("inspect", str(invalid_controls))
+    if rejected_controls.returncode == 0 or "unsupported control profile" not in rejected_controls.stderr:
+        raise SystemExit("invalid control metadata did not fail closed")
 
     # Version 2 and 3 snapshots identify the source machine at offset 0x6D.
     # Only a native CPC464 snapshot may be described as CPC464 by the package.

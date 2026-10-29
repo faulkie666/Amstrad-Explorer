@@ -10,5 +10,6 @@ enum class FastBenchmarkMode {
 };
 
 void set_fast_benchmark_mode(FastBenchmarkMode mode);
+void set_fast_audio_enabled(bool enabled);
 
 }  // namespace cpcexplorer::testing

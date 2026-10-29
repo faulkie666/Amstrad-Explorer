@@ -38,6 +38,12 @@ struct DisplayGeometry {
     bool valid = false;
 };
 
+using AudioCallback = void (*)(const float*, std::size_t, void*);
+struct AudioDiagnostics { std::uint64_t samples = 0, nonzero_samples = 0, register_writes = 0; };
+inline constexpr unsigned AudioSampleRate = 22050;
+void set_audio_callback(AudioCallback callback, void* user = nullptr);
+AudioDiagnostics audio_diagnostics();
+
 // The reference engine remains the deterministic default. Selection is
 // explicit and takes effect on the next init/reset.
 bool select_engine(EngineKind engine);
@@ -67,5 +73,14 @@ int framebuffer_width();
 int framebuffer_height();
 DisplayGeometry display_geometry();
 Diagnostics diagnostics();
+
+namespace testing {
+using AyWriteCallback = void (*)(std::uint64_t cycle, std::uint8_t reg,
+                                 std::uint8_t value, void* user);
+void set_ay_write_callback(AyWriteCallback callback, void* user = nullptr);
+void ay_write_register(std::uint8_t reg, std::uint8_t value);
+std::uint8_t ay_read_register(std::uint8_t reg);
+void ay_advance_ticks(std::uint32_t ticks);
+}
 
 }  // namespace cpcexplorer

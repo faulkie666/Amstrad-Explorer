@@ -9,8 +9,8 @@ namespace cpcexplorer::launcher {
 namespace {
 
 constexpr Entry kEntries[] = {
-    {"Locomotive BASIC", EntryType::Basic, nullptr, nullptr, 0},
-    {"Knight Tyme", EntryType::Snapshot, "knight_tyme", nullptr, 0},
+    {"Locomotive BASIC", EntryType::Basic, nullptr, nullptr, 0, input::Profile::None},
+    {"Knight Tyme", EntryType::Snapshot, "knight_tyme", nullptr, 0, input::Profile::None},
 };
 
 library::View library_view;
@@ -25,7 +25,10 @@ Entry entry(std::size_t index) {
     if (index < std::size(kEntries)) return kEntries[index];
     library::GameInfo game{};
     if (!library_view.game(index - std::size(kEntries), game)) return kEntries[0];
-    return {game.title, EntryType::Snapshot, game.game_id, game.data, game.data_length};
+    auto profile = input::profile_from_metadata(game.control_profile);
+    if (profile == input::Profile::None)
+        profile = input::legacy_profile_for_payload_crc(game.data_crc32);
+    return {game.title, EntryType::Snapshot, game.game_id, game.data, game.data_length, profile};
 }
 
 std::size_t entry_count() { return std::size(kEntries) + library_view.valid_count(); }
