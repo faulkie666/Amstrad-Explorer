@@ -289,7 +289,7 @@ void am40010_iorq(am40010_t* ga, uint64_t cpu_pins);
         AM40010_READY/Z80_WAIT - gate array wants the Z80 to wait
         AM40010_INT/Z80_INT    - interrupt request from the gate array was triggered
 */
-uint64_t am40010_tick(am40010_t* ga, uint64_t cpu_pins);
+uint64_t CHIPS_HOT_CODE(am40010_tick)(am40010_t* ga, uint64_t cpu_pins);
 
 // prepare am40010_t snapshot before saving
 void am40010_snapshot_onsave(am40010_t* snapshot);
@@ -718,7 +718,7 @@ static uint8_t _am40010_vid_read(am40010_t* ga, uint64_t crtc_pins, uint16_t ccl
     return ga->ram[addr];
 }
 
-static void _am40010_decode_pixels(am40010_t* ga, uint8_t* dst) {
+static void CHIPS_HOT_CODE(_am40010_decode_pixels)(am40010_t* ga, uint8_t* dst) {
     uint8_t c;
     uint8_t p;
     switch (ga->video.mode) {
@@ -856,7 +856,7 @@ static void _am40010_decode_video(am40010_t* ga, uint64_t crtc_pins) {
 }
 
 // the tick function must be called at 4 MHz
-uint64_t am40010_tick(am40010_t* ga, uint64_t pins) {
+uint64_t CHIPS_HOT_CODE(am40010_tick)(am40010_t* ga, uint64_t pins) {
     /* The hardware has a 'main sequencer' with a rotating bit
         pattern which defines when the different actions happen in
         the 16 MHz ticks.

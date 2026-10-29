@@ -23,6 +23,11 @@ pico_board_cmake_set(PICO_PLATFORM, rp2350)
 #define PIMORONI_EXPLORER_LCD_RD_PIN        31
 #define PIMORONI_EXPLORER_LCD_DB0_PIN       32
 
+/* On-board switches connect to ground when pressed: active-low, pull-up. */
+#define PIMORONI_EXPLORER_SWITCH_X_PIN       17
+#define PIMORONI_EXPLORER_SWITCH_Y_PIN       18
+#define PIMORONI_EXPLORER_SWITCH_Z_PIN       19
+
 /* Treat the active-high LCD backlight as the board LED for bring-up. */
 #ifndef PICO_DEFAULT_LED_PIN
 #define PICO_DEFAULT_LED_PIN PIMORONI_EXPLORER_LCD_BACKLIGHT_PIN
