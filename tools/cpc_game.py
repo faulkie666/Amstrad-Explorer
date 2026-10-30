@@ -4,10 +4,13 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
+import json
 import re
 import struct
 import subprocess
 import sys
+import time
 import zlib
 from pathlib import Path
 
@@ -18,6 +21,28 @@ DESCRIPTOR_BYTES = 80
 PAYLOAD_OFFSET = PACKAGE_HEADER_BYTES + DESCRIPTOR_BYTES
 SNA_BYTES = 256 + 65536
 CHUNK_BYTES = 1024
+MIGRATION_PAGE_BYTES = 256
+# Keep each hex response below the device's bounded USB-stdio burst size. The
+# firmware accepts up to 128 bytes, but a physical 128-byte response was
+# newline-terminated after only 77 bytes. A 64-byte request remains strictly
+# framed while avoiding that long sequence of non-blocking printf calls.
+MIGRATION_READ_BYTES = 64
+MIGRATION_PACK_OFFSET = 0x43B000
+MIGRATION_PACK_BYTES = 179360
+MIGRATION_BACKUP_OFFSET = 0x400000
+MIGRATION_BACKUP_END = MIGRATION_PACK_OFFSET
+CATALOGUE_BYTES = 16384
+CATALOGUE_SLOTS_BYTES = 2 * CATALOGUE_BYTES
+MIGRATION_PACK_CRC32 = 0xEC7FD1E9
+MIGRATION_PACK_SHA256 = "27dc071d9360b08e1248e0e90aff484c648cc95bb2d436dc7aa91b1ef1e28fbe"
+MIGRATION_FIRMWARES = {
+    "28b9c675f099a43ef75bd9ddfa8beb5d7936293fc910a1a129588940a75c8114":
+        b"fw=0.4.20-stage4i8migrationexp",
+    "2b8860deb112f0ab475ae99d40f38dcdd74c397862843edba6e14c985f6a32c6":
+        b"fw=0.4.21-stage4j1qwstexp",
+    "fe03344d1a02f804e2db2ea5677939303d778320352bd053bbd22b3cc21ceb53":
+        b"fw=0.4.23-stage4j3migrationfix",
+}
 SNA_MACHINE_OFFSET = 0x6D
 SNA_MACHINE_NAMES = {
     0: "CPC464",
@@ -28,7 +53,17 @@ SNA_MACHINE_NAMES = {
     5: "CPC464 Plus",
     6: "GX4000",
 }
-CONTROL_PROFILES = {"none": 0, "qw-shift": 1, "zx-space": 2}
+CONTROL_PROFILES = {
+    "none": 0,
+    "qw-shift": 1,
+    "zx-space": 2,
+    "joystick-fire": 3,
+    "fruity-legacy": 4,
+    "thrust-five-key": 5,
+    "cursor-qaop": 6,
+    "knight-tyme": 7,
+    "wasd-space": 8,
+}
 CONTROL_PROFILE_NAMES = {value: name for name, value in CONTROL_PROFILES.items()}
 
 
@@ -112,6 +147,16 @@ def parse_package(data: bytes) -> dict[str, object]:
     }
 
 
+def validate_launcher_visibility(package: bytes) -> dict[str, object]:
+    """Fail before serial access if the installed A-Z launcher cannot show a title."""
+    info = parse_package(package)
+    title = str(info["title"])
+    if not title or not ("A" <= title[0] <= "Z" or "a" <= title[0] <= "z"):
+        raise ValueError(
+            f"launcher visibility requires an alphabetic title; {title!r} would be hidden")
+    return info
+
+
 def frame(command: int, sequence: int, payload: bytes = b"") -> bytes:
     if len(payload) > CHUNK_BYTES:
         raise ValueError("protocol payload exceeds 1024 bytes")
@@ -144,14 +189,29 @@ def selected_port(requested: str | None) -> str:
 
 
 def read_protocol_line(port, expected: tuple[bytes, ...]) -> bytes:
-    for _ in range(32):
-        line = port.readline().strip()
+    serial_timeout = float(port.timeout or 0)
+    deadline = time.monotonic() + max(2.0, min(10.0, serial_timeout * 2.0))
+    pending = bytearray()
+    complete_lines = 0
+    while time.monotonic() < deadline:
+        fragment = port.read_until(b"\n", 4096 - len(pending))
+        if fragment:
+            pending.extend(fragment)
+        if len(pending) >= 4096 and not pending.endswith(b"\n"):
+            raise RuntimeError("CPC Explorer protocol response exceeds 4095 bytes")
+        if not pending.endswith(b"\n"):
+            continue
+        line = bytes(pending).strip()
+        pending.clear()
+        complete_lines += 1
         if not line:
             continue
         if line.startswith(b"CPCU1 ERROR"):
             raise RuntimeError(line.decode("ascii", "replace"))
         if any(line.startswith(prefix) for prefix in expected):
             return line
+        if complete_lines >= 32:
+            break
     raise RuntimeError("timed out waiting for CPC Explorer protocol response")
 
 
@@ -173,7 +233,7 @@ def query(port_name: str, list_games: bool) -> None:
 def upload(package: bytes, port_name: str, confirmation: str) -> None:
     if confirmation != "UPLOAD":
         raise ValueError("serial upload requires --confirm UPLOAD")
-    parse_package(package)
+    package_info = validate_launcher_visibility(package)
     serial, _ = serial_module()
     with serial.Serial(port_name, 115200, timeout=2, write_timeout=2) as port:
         port.reset_input_buffer()
@@ -193,7 +253,7 @@ def upload(package: bytes, port_name: str, confirmation: str) -> None:
         port.write(frame(4, 0))
         response = read_protocol_line(port, (b"CPCU1 COMMITTED",))
         match = re.search(rb"\bcrc=([0-9a-fA-F]{8})\b", response)
-        expected_payload_crc = parse_package(package)["payload_crc32"]
+        expected_payload_crc = package_info["payload_crc32"]
         if match is None or match.group(1).decode("ascii").lower() != expected_payload_crc:
             raise RuntimeError("device readback checksum does not match package payload")
         print(response.decode())
@@ -216,6 +276,274 @@ def remove_game(game_id: str, port_name: str, confirmation: str) -> None:
         if f"id={game_id}".encode() not in response:
             raise RuntimeError("device removal acknowledgement ID mismatch")
         print(response.decode())
+
+
+def validate_migration_files(pack: bytes, firmware: bytes, expected_pack: str,
+                             expected_firmware: str) -> None:
+    pack_sha = hashlib.sha256(pack).hexdigest()
+    firmware_sha = hashlib.sha256(firmware).hexdigest()
+    if (len(pack) != MIGRATION_PACK_BYTES or zlib.crc32(pack) != MIGRATION_PACK_CRC32 or
+            pack_sha != MIGRATION_PACK_SHA256 or expected_pack.lower() != pack_sha):
+        raise ValueError("migration pack identity/size/CRC/SHA-256 mismatch")
+    if firmware_sha not in MIGRATION_FIRMWARES or expected_firmware.lower() != firmware_sha:
+        raise ValueError("approved migration firmware SHA-256 mismatch")
+
+
+def migration_status(port_name: str) -> None:
+    serial, _ = serial_module()
+    with serial.Serial(port_name, 115200, timeout=3, write_timeout=2) as port:
+        port.reset_input_buffer()
+        port.write(frame(1, 0))
+        print(read_protocol_line(port, (b"CPCU1 READY",)).decode())
+        port.write(frame(9, 0))
+        print(read_protocol_line(port, (b"CPCU1 MIGRATION LAYOUT",)).decode())
+        port.write(frame(8, 0))
+        print(read_protocol_line(port, (b"CPCU1 MIGRATION STATUS",)).decode())
+
+
+def read_migration_range(port, offset: int, length: int) -> bytes:
+    result = bytearray()
+    for chunk_index, physical in enumerate(range(offset, offset + length, MIGRATION_READ_BYTES)):
+        count = min(MIGRATION_READ_BYTES, offset + length - physical)
+        port.write(frame(15, 0, struct.pack("<II", physical, count)))
+        line = read_protocol_line(port, (b"CPCU1 MIGRATION DATA ",))
+        parts = line.split(b" ", 4)
+        if len(parts) != 5 or int(parts[3]) != physical:
+            actual_offset = parts[3].decode("ascii", "replace") if len(parts) > 3 else "missing"
+            raise RuntimeError(
+                f"migration readback offset mismatch at chunk={chunk_index}: "
+                f"expected={physical} actual={actual_offset}")
+        try:
+            block = bytes.fromhex(parts[4].decode("ascii"))
+        except (UnicodeDecodeError, ValueError) as error:
+            raise RuntimeError(
+                f"migration readback corrupt hex at chunk={chunk_index} offset=0x{physical:06x}") from error
+        if len(block) != count:
+            raise RuntimeError(
+                f"migration readback length mismatch at chunk={chunk_index} "
+                f"offset=0x{physical:06x}: expected={count} actual={len(block)} "
+                f"line_bytes={len(line)}")
+        result.extend(block)
+    return bytes(result)
+
+
+def backup_legacy_library(port_name: str, output: Path) -> None:
+    serial, _ = serial_module()
+    with serial.Serial(port_name, 115200, timeout=4, write_timeout=2) as port:
+        port.reset_input_buffer()
+        port.write(frame(1, 0))
+        ready = read_protocol_line(port, (b"CPCU1 READY",))
+        if b"flash=EF-40-18" not in ready or b"capacity=16777216" not in ready:
+            raise RuntimeError("unexpected physical flash identity/capacity")
+        data = read_migration_range(port, MIGRATION_BACKUP_OFFSET,
+                                    MIGRATION_BACKUP_END - MIGRATION_BACKUP_OFFSET)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_bytes(data)
+    print(f"wrote {output} bytes={len(data)} sha256={hashlib.sha256(data).hexdigest()}")
+
+
+def masked_crc32(data: bytes, offset: int, length: int, field: int) -> int:
+    block = bytearray(data[offset:offset + length])
+    block[field:field + 4] = bytes(4)
+    return zlib.crc32(block)
+
+
+def parse_catalogue_slots(data: bytes) -> list[dict[str, object]]:
+    if len(data) != CATALOGUE_SLOTS_BYTES:
+        raise ValueError("catalogue evidence must contain exactly two 16 KiB slots")
+    slots = []
+    for slot in range(2):
+        base = slot * CATALOGUE_BYTES
+        catalog = data[base:base + CATALOGUE_BYTES]
+        if catalog[:8] != b"CPCLIB1\0" or struct.unpack_from("<HH", catalog, 8) != (1, 64):
+            raise ValueError(f"catalogue slot {slot} identity is invalid")
+        generation = struct.unpack_from("<I", catalog, 12)[0]
+        count, descriptor_bytes = struct.unpack_from("<HH", catalog, 16)
+        high_water = struct.unpack_from("<I", catalog, 40)[0]
+        if count > 192 or descriptor_bytes != 80 or \
+                struct.unpack_from("<I", catalog, 32)[0] != 0x4D4D4F43 or \
+                masked_crc32(catalog, 0, 64, 28) != struct.unpack_from("<I", catalog, 28)[0]:
+            raise ValueError(f"catalogue slot {slot} header is invalid")
+        entries = []
+        seen = set()
+        for index in range(count):
+            at = 64 + index * 80
+            descriptor = catalog[at:at + 80]
+            if len(descriptor) != 80 or masked_crc32(descriptor, 0, 80, 72) != \
+                    struct.unpack_from("<I", descriptor, 72)[0]:
+                raise ValueError(f"catalogue slot {slot} descriptor {index} CRC is invalid")
+            game_id = descriptor[:16].split(b"\0", 1)[0].decode("ascii")
+            title = descriptor[16:56].split(b"\0", 1)[0].decode("ascii")
+            data_offset, length, payload_crc = struct.unpack_from("<III", descriptor, 60)
+            if game_id in seen or length != SNA_BYTES or data_offset < 0x8000 or \
+                    data_offset + 17 * 4096 > 0xBF0000:
+                raise ValueError(f"catalogue slot {slot} descriptor {index} is invalid")
+            seen.add(game_id)
+            entries.append({"index": index, "id": game_id, "title": title,
+                            "data_offset": data_offset, "length": length,
+                            "payload_crc32": f"{payload_crc:08x}"})
+        slots.append({"slot": slot, "generation": generation, "count": count,
+                      "high_water": high_water, "entries": entries,
+                      "sha256": hashlib.sha256(catalog).hexdigest()})
+    return slots
+
+
+def audit_catalogues(port_name: str, output: Path) -> None:
+    serial, _ = serial_module()
+    with serial.Serial(port_name, 115200, timeout=4, write_timeout=2) as port:
+        port.reset_input_buffer()
+        port.write(frame(1, 0))
+        ready = read_protocol_line(port, (b"CPCU1 READY",))
+        if b"fw=0.4.28-stage4k7migrationrecoverfix" not in ready or \
+                b"flash=EF-40-18" not in ready or b"capacity=16777216" not in ready:
+            raise RuntimeError("unexpected device identity for catalogue audit")
+        data = read_migration_range(port, MIGRATION_BACKUP_OFFSET, CATALOGUE_SLOTS_BYTES)
+    slots = parse_catalogue_slots(data)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_bytes(data)
+    report = output.with_suffix(".json")
+    report.write_text(json.dumps({"ready": ready.decode(), "slots": slots}, indent=2) + "\n",
+                      encoding="utf-8")
+    print(f"wrote {output} bytes={len(data)} sha256={hashlib.sha256(data).hexdigest()}")
+    print(f"wrote {report}")
+
+
+def require_migration_device(port, expected_firmware_sha: str | None = None) -> bytes:
+    port.reset_input_buffer()
+    port.write(frame(1, 0))
+    ready = read_protocol_line(port, (b"CPCU1 READY",))
+    accepted_identity = MIGRATION_FIRMWARES.get(expected_firmware_sha or "")
+    if accepted_identity is None:
+        accepted_identity = next((identity for identity in MIGRATION_FIRMWARES.values()
+                                  if identity in ready), None)
+    if (accepted_identity is None or accepted_identity not in ready or b"flash=EF-40-18" not in ready or
+            b"capacity=16777216" not in ready):
+        raise RuntimeError("unexpected firmware or physical flash identity/capacity")
+    return ready
+
+
+def staged_image(pack: bytes) -> bytes:
+    expected = bytearray(pack)
+    expected[0:256] = b"\xff" * 256
+    expected[4096:4352] = b"\xff" * 256
+    return bytes(expected)
+
+
+def stage_library(pack: bytes, firmware: bytes, port_name: str | None, confirmation: str | None,
+                  execute: bool, expected_pack: str, expected_firmware: str) -> None:
+    validate_migration_files(pack, firmware, expected_pack, expected_firmware)
+    print(f"pack: bytes={len(pack)} crc32={zlib.crc32(pack):08x} sha256={hashlib.sha256(pack).hexdigest()}")
+    print(f"firmware: sha256={hashlib.sha256(firmware).hexdigest()}")
+    if not execute:
+        print("DRY RUN ONLY: no serial port opened and no device write attempted")
+        return
+    if confirmation != "STAGE" or not port_name:
+        raise ValueError("physical staging requires --port, --execute and --confirm STAGE")
+    serial, _ = serial_module()
+    with serial.Serial(port_name, 115200, timeout=4, write_timeout=2) as port:
+        print(require_migration_device(port, expected_firmware.lower()).decode())
+        port.write(frame(9, 0))
+        print(read_protocol_line(port, (b"CPCU1 MIGRATION LAYOUT",)).decode())
+        begin = (b"MIGRATE\0" + struct.pack("<IIII", 1, MIGRATION_PACK_OFFSET,
+                 len(pack), zlib.crc32(pack)) + bytes.fromhex(MIGRATION_PACK_SHA256))
+        port.write(frame(10, 0, begin))
+        print(read_protocol_line(port, (b"CPCU1 MIGRATION BEGIN OK",)).decode())
+        for sequence, offset in enumerate(range(0, len(pack), MIGRATION_PAGE_BYTES)):
+            page = pack[offset:offset + MIGRATION_PAGE_BYTES]
+            port.write(frame(11, sequence, page))
+            read_protocol_line(port, (f"CPCU1 MIGRATION ACK {sequence} ".encode(),))
+        port.write(frame(12, 0))
+        print(read_protocol_line(port, (b"CPCU1 MIGRATION VERIFIED",)).decode())
+        if read_migration_range(port, MIGRATION_PACK_OFFSET, len(pack)) != staged_image(pack):
+            raise RuntimeError("pre-activation readback mismatch; outcome is HOLD")
+        port.write(frame(8, 0))
+        status = read_protocol_line(port, (b"CPCU1 MIGRATION STATUS",))
+        if b"state=verified" not in status:
+            raise RuntimeError("staged transaction is not durably verified; outcome is HOLD")
+        print(status.decode())
+        print("STAGED AND VERIFIED: catalogue activation was not requested")
+
+
+def activate_library(pack: bytes, port_name: str | None, confirmation: str | None,
+                     execute: bool, expected_pack: str) -> None:
+    if (len(pack) != MIGRATION_PACK_BYTES or zlib.crc32(pack) != MIGRATION_PACK_CRC32 or
+            hashlib.sha256(pack).hexdigest() != MIGRATION_PACK_SHA256 or
+            expected_pack.lower() != MIGRATION_PACK_SHA256):
+        raise ValueError("migration pack identity/size/CRC/SHA-256 mismatch")
+    if not execute:
+        print("DRY RUN ONLY: activation not requested and no serial port opened")
+        return
+    if confirmation != "ACTIVATE" or not port_name:
+        raise ValueError("physical activation requires --port, --execute and --confirm ACTIVATE")
+    serial, _ = serial_module()
+    with serial.Serial(port_name, 115200, timeout=4, write_timeout=2) as port:
+        print(require_migration_device(port).decode())
+        port.write(frame(8, 0))
+        status = read_protocol_line(port, (b"CPCU1 MIGRATION STATUS",))
+        if b"state=verified" not in status:
+            raise RuntimeError("activation requires an independently verified staged transaction")
+        if read_migration_range(port, MIGRATION_PACK_OFFSET, len(pack)) != staged_image(pack):
+            raise RuntimeError("independent staged readback mismatch; activation refused")
+        port.write(frame(13, 0))
+        print(read_protocol_line(port, (b"CPCU1 MIGRATION ACTIVE",)).decode())
+        active = read_migration_range(port, MIGRATION_PACK_OFFSET, len(pack))
+        if hashlib.sha256(active).hexdigest() != MIGRATION_PACK_SHA256:
+            raise RuntimeError("post-activation SHA-256 readback mismatch; outcome is HOLD")
+        port.write(frame(8, 0))
+        final_status = read_protocol_line(port, (b"CPCU1 MIGRATION STATUS",))
+        if b"state=active" not in final_status:
+            raise RuntimeError("activation did not establish durable active state")
+        print(final_status.decode())
+        print("independent active-image SHA-256: PASS")
+
+
+def migrate_library(pack: bytes, firmware: bytes, port_name: str | None, confirmation: str | None,
+                    execute: bool, expected_pack: str, expected_firmware: str) -> None:
+    validate_migration_files(pack, firmware, expected_pack, expected_firmware)
+    print(f"pack: bytes={len(pack)} crc32={zlib.crc32(pack):08x} sha256={hashlib.sha256(pack).hexdigest()}")
+    print(f"firmware: sha256={hashlib.sha256(firmware).hexdigest()}")
+    print("target: EF-40-18 capacity=16777216 offset=0x43b000 reserved_end=0x467000")
+    if not execute:
+        print("DRY RUN ONLY: no serial port opened and no device write attempted")
+        return
+    if confirmation != "MIGRATE":
+        raise ValueError("physical migration requires --execute --confirm MIGRATE")
+    if not port_name:
+        raise ValueError("physical migration requires an explicit --port")
+    serial, _ = serial_module()
+    with serial.Serial(port_name, 115200, timeout=4, write_timeout=2) as port:
+        port.reset_input_buffer()
+        port.write(frame(1, 0))
+        ready = read_protocol_line(port, (b"CPCU1 READY",))
+        if b"flash=EF-40-18" not in ready or b"capacity=16777216" not in ready:
+            raise RuntimeError("unexpected physical flash identity/capacity")
+        print(ready.decode())
+        port.write(frame(9, 0))
+        print(read_protocol_line(port, (b"CPCU1 MIGRATION LAYOUT",)).decode())
+        begin = (b"MIGRATE\0" + struct.pack("<IIII", 1, MIGRATION_PACK_OFFSET,
+                 len(pack), zlib.crc32(pack)) + bytes.fromhex(MIGRATION_PACK_SHA256))
+        port.write(frame(10, 0, begin))
+        print(read_protocol_line(port, (b"CPCU1 MIGRATION BEGIN OK",)).decode())
+        for sequence, offset in enumerate(range(0, len(pack), MIGRATION_PAGE_BYTES)):
+            page = pack[offset:offset + MIGRATION_PAGE_BYTES]
+            port.write(frame(11, sequence, page))
+            read_protocol_line(port, (f"CPCU1 MIGRATION ACK {sequence} ".encode(),))
+        port.write(frame(12, 0))
+        print(read_protocol_line(port, (b"CPCU1 MIGRATION VERIFIED",)).decode())
+
+        staged = read_migration_range(port, MIGRATION_PACK_OFFSET, len(pack))
+        expected_staged = bytearray(pack)
+        expected_staged[0:256] = b"\xff" * 256
+        expected_staged[4096:4352] = b"\xff" * 256
+        if staged != expected_staged:
+            raise RuntimeError("pre-activation readback mismatch; outcome is HOLD")
+
+        port.write(frame(13, 0))
+        print(read_protocol_line(port, (b"CPCU1 MIGRATION ACTIVE",)).decode())
+        readback = read_migration_range(port, MIGRATION_PACK_OFFSET, len(pack))
+        if hashlib.sha256(readback).hexdigest() != MIGRATION_PACK_SHA256:
+            raise RuntimeError("post-activation SHA-256 readback mismatch; outcome is HOLD")
+        print("independent readback SHA-256: PASS")
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -246,6 +574,36 @@ def main(argv: list[str] | None = None) -> int:
     removal.add_argument("game_id")
     removal.add_argument("--port")
     removal.add_argument("--confirm", required=True)
+    migration_query = sub.add_parser("migration-status", help="read-only CPXPCK2 migration state")
+    migration_query.add_argument("--port")
+    migration_backup = sub.add_parser("backup-library", help="read-only backup of catalogues and legacy allocations")
+    migration_backup.add_argument("--port", required=True)
+    migration_backup.add_argument("--output", required=True, type=Path)
+    catalogue_audit = sub.add_parser("audit-catalogues", help="read-only two-slot CPCLIB1 descriptor audit")
+    catalogue_audit.add_argument("--port", required=True)
+    catalogue_audit.add_argument("--output", required=True, type=Path)
+    migration = sub.add_parser("migrate-library", help="dry-run by default; install the fixed Stage 4I.7 pack")
+    migration.add_argument("pack", type=Path)
+    migration.add_argument("--firmware", required=True, type=Path)
+    migration.add_argument("--expect-pack-sha256", required=True)
+    migration.add_argument("--expect-firmware-sha256", required=True)
+    migration.add_argument("--port")
+    migration.add_argument("--execute", action="store_true")
+    migration.add_argument("--confirm")
+    staging = sub.add_parser("stage-library", help="dry-run by default; program and verify without activation")
+    staging.add_argument("pack", type=Path)
+    staging.add_argument("--firmware", required=True, type=Path)
+    staging.add_argument("--expect-pack-sha256", required=True)
+    staging.add_argument("--expect-firmware-sha256", required=True)
+    staging.add_argument("--port")
+    staging.add_argument("--execute", action="store_true")
+    staging.add_argument("--confirm")
+    activation = sub.add_parser("activate-library", help="dry-run by default; activate an already verified pack")
+    activation.add_argument("pack", type=Path)
+    activation.add_argument("--expect-pack-sha256", required=True)
+    activation.add_argument("--port")
+    activation.add_argument("--execute", action="store_true")
+    activation.add_argument("--confirm")
     args = parser.parse_args(argv)
     try:
         if args.command == "import-sna":
@@ -277,8 +635,29 @@ def main(argv: list[str] | None = None) -> int:
         elif args.command in ("status", "list"):
             query(selected_port(args.port), args.command == "list")
         elif args.command == "upload":
-            upload(args.package.read_bytes(), selected_port(args.port), args.confirm)
+            package = args.package.read_bytes()
+            # This must precede selected_port(): rejected titles cannot even begin
+            # device discovery, let alone send BEGIN or trigger flash operations.
+            validate_launcher_visibility(package)
+            upload(package, selected_port(args.port), args.confirm)
             print("upload committed")
+        elif args.command == "migration-status":
+            migration_status(selected_port(args.port))
+        elif args.command == "backup-library":
+            backup_legacy_library(args.port, args.output)
+        elif args.command == "audit-catalogues":
+            audit_catalogues(args.port, args.output)
+        elif args.command == "migrate-library":
+            migrate_library(args.pack.read_bytes(), args.firmware.read_bytes(), args.port,
+                            args.confirm, args.execute, args.expect_pack_sha256,
+                            args.expect_firmware_sha256)
+        elif args.command == "stage-library":
+            stage_library(args.pack.read_bytes(), args.firmware.read_bytes(), args.port,
+                          args.confirm, args.execute, args.expect_pack_sha256,
+                          args.expect_firmware_sha256)
+        elif args.command == "activate-library":
+            activate_library(args.pack.read_bytes(), args.port, args.confirm, args.execute,
+                             args.expect_pack_sha256)
         else:
             remove_game(args.game_id, selected_port(args.port), args.confirm)
             print("removal committed")

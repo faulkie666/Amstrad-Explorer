@@ -52,6 +52,10 @@ public:
         for (auto& buffer : buffers_) buffer.fill(128);
     }
 
+    bool has_free() const {
+        return state_[0] == State::Free || state_[1] == State::Free;
+    }
+
 private:
     enum class State : std::uint8_t { Free, Ready, Playing };
     std::array<std::array<std::uint16_t, BufferSamples>, 2> buffers_{};

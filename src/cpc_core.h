@@ -5,6 +5,8 @@
 
 namespace cpcexplorer {
 
+namespace packed { struct Record; }
+
 enum class EngineKind : std::uint8_t {
     Reference,
     Fast,
@@ -39,10 +41,15 @@ struct DisplayGeometry {
 };
 
 using AudioCallback = void (*)(const float*, std::size_t, void*);
+using AyWriteCallback = void (*)(std::uint64_t cycle, std::uint8_t reg,
+                                 std::uint8_t value, void* user);
 struct AudioDiagnostics { std::uint64_t samples = 0, nonzero_samples = 0, register_writes = 0; };
 inline constexpr unsigned AudioSampleRate = 22050;
 void set_audio_callback(AudioCallback callback, void* user = nullptr);
 AudioDiagnostics audio_diagnostics();
+void set_ay_write_callback(AyWriteCallback callback, void* user = nullptr);
+void set_external_ay_renderer(bool enabled);
+void copy_ay_registers(std::uint8_t* destination, std::size_t size);
 
 // The reference engine remains the deterministic default. Selection is
 // explicit and takes effect on the next init/reset.
@@ -62,10 +69,12 @@ bool consume_presented_frame();
 void set_diagnostics_enabled(bool enabled);
 void key_down(int key_code);
 void key_up(int key_code);
+void set_digital_joystick(bool enabled);
 bool quickload(const std::uint8_t* data, std::size_t size, bool start);
 std::size_t sna_size();
 bool save_sna(std::uint8_t* destination, std::size_t size);
 bool load_sna(const std::uint8_t* data, std::size_t size);
+bool load_packed_sna(const packed::Record& record);
 bool load_builtin_knight_tyme();
 const std::uint8_t* framebuffer();
 const std::uint32_t* palette();
@@ -75,8 +84,6 @@ DisplayGeometry display_geometry();
 Diagnostics diagnostics();
 
 namespace testing {
-using AyWriteCallback = void (*)(std::uint64_t cycle, std::uint8_t reg,
-                                 std::uint8_t value, void* user);
 void set_ay_write_callback(AyWriteCallback callback, void* user = nullptr);
 void ay_write_register(std::uint8_t reg, std::uint8_t value);
 std::uint8_t ay_read_register(std::uint8_t reg);

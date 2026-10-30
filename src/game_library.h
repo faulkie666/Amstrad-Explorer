@@ -18,6 +18,7 @@ constexpr std::uint16_t kFormatVersion = 1;
 constexpr std::uint16_t kDescriptorBytes = 80;
 constexpr std::uint16_t kCatalogHeaderBytes = 64;
 constexpr std::uint16_t kMaximumEntries = 192;
+constexpr std::uint8_t kMaximumControlProfile = 8;
 constexpr std::uint32_t kSnapshotBytes = 256U + 64U * 1024U;
 constexpr std::uintptr_t kLibraryXipAddress = 0x10000000U + kLibraryFlashOffset;
 static_assert(kLibraryFlashOffset + kLibraryBytes == kE10GuardFlashOffset);
@@ -56,9 +57,11 @@ public:
     std::size_t valid_count() const { return valid_count_; }
     std::uint32_t catalog_offset() const;
     bool game(std::size_t valid_index, GameInfo& result) const;
+    bool verified_game(std::size_t valid_index, GameInfo& result) const;
 
 private:
-    bool descriptor(std::size_t descriptor_index, GameInfo& result) const;
+    bool descriptor(std::size_t descriptor_index, GameInfo& result,
+                    bool verify_payload) const;
 
     const std::uint8_t* library_ = nullptr;
     std::size_t library_size_ = 0;

@@ -3,9 +3,20 @@
 #include "display_fit.h"
 #include "game_library.h"
 #include "gameplay_input.h"
+#if defined(CPCEXPLORER_QWST_PAD)
+#include "qwst_pad.h"
+#include "qwst_pad_pico.h"
+#endif
 #include "launcher.h"
+#include "menu_presentation.h"
 #if defined(CPCEXPLORER_AY_AUDIO)
 #include "audio_output.h"
+#endif
+#if defined(CPCEXPLORER_DUAL_CORE_AY)
+#include "dual_core_ay.h"
+#endif
+#if defined(CPCEXPLORER_INTERNAL_LIBRARY)
+#include "packed_migration.h"
 #endif
 #if defined(CPCEXPLORER_PERF_DIAGNOSTICS)
 #include "performance_metrics.h"
@@ -45,6 +56,7 @@ constexpr std::uint16_t kPanelBlue = rgb565(0, 28, 120);
 constexpr std::uint16_t kYellow = rgb565(255, 232, 32);
 constexpr std::uint16_t kWhite = rgb565(238, 246, 255);
 constexpr std::uint16_t kLightBlue = rgb565(96, 204, 255);
+constexpr std::uint16_t kMutedBlue = rgb565(88, 120, 184);
 
 std::array<std::uint8_t, kLcdWidth * 2> lines[2];
 
@@ -248,14 +260,15 @@ constexpr int kEntryTop = 122;
 constexpr int kEntryHeight = 30;
 constexpr std::size_t kVisibleEntries = 3;
 
-void draw_entry(std::size_t entry_index, std::size_t row, bool selected) {
+void draw_entry(const cpcexplorer::launcher::MenuController& menu,
+                std::size_t entry_index, std::size_t row, bool selected) {
     const int y = kEntryTop + static_cast<int>(row) * kEntryHeight;
     const std::uint16_t background = selected ? kYellow : kPanelBlue;
     const std::uint16_t foreground = selected ? kCpcBlue : kWhite;
     fill_rect(34, y, 252, 24, background);
     char label[44]{};
     std::snprintf(label, sizeof(label), "%c %s", selected ? '>' : ' ',
-                  cpcexplorer::launcher::entry(entry_index).display_name);
+                  menu.label(entry_index));
     const int scale = text_width(label, 2) <= 224 ? 2 : 1;
     draw_text(label, 48, y + (24 - 7 * scale) / 2, scale, foreground, background);
 }
@@ -265,8 +278,8 @@ void draw_entries(const cpcexplorer::launcher::MenuController& menu) {
     const std::size_t first = menu.first_visible(kVisibleEntries);
     for (std::size_t row = 0; row < kVisibleEntries; ++row) {
         const std::size_t index = first + row;
-        if (index >= cpcexplorer::launcher::entry_count()) break;
-        draw_entry(index, row, index == menu.selected());
+        if (index >= menu.visible_count()) break;
+        draw_entry(menu, index, row, index == menu.selected());
     }
 }
 
@@ -274,14 +287,21 @@ void draw_menu(const cpcexplorer::launcher::MenuController& menu) {
     fill_rect(0, 0, kLcdWidth, kLcdHeight, kCpcBlue);
     draw_centered("AMSTRAD CPC", 18, 3, kYellow, kCpcBlue);
     draw_centered("EXPLORER", 46, 3, kLightBlue, kCpcBlue);
-    draw_centered("Select a system or game", 86, 2, kWhite, kCpcBlue);
+    draw_centered(cpcexplorer::menu_presentation::Instruction, 86, 2, kWhite, kCpcBlue);
     fill_rect(34, 110, 252, 2, kLightBlue);
     draw_entries(menu);
     draw_centered("X = UP   Z = DOWN   Y = SELECT", 224, 1, kYellow, kCpcBlue);
+    draw_text(cpcexplorer::menu_presentation::Signature,
+              cpcexplorer::menu_presentation::SignatureX,
+              cpcexplorer::menu_presentation::SignatureY,
+              cpcexplorer::menu_presentation::SignatureScale, kMutedBlue, kCpcBlue);
 }
 
 std::uint8_t read_menu_buttons() {
     std::uint8_t pressed = 0;
+    if (!gpio_get(PIMORONI_EXPLORER_SWITCH_A_PIN)) pressed |= cpcexplorer::launcher::ButtonA;
+    if (!gpio_get(PIMORONI_EXPLORER_SWITCH_B_PIN)) pressed |= cpcexplorer::launcher::ButtonB;
+    if (!gpio_get(PIMORONI_EXPLORER_SWITCH_C_PIN)) pressed |= cpcexplorer::launcher::ButtonC;
     if (!gpio_get(PIMORONI_EXPLORER_SWITCH_X_PIN)) pressed |= cpcexplorer::launcher::ButtonX;
     if (!gpio_get(PIMORONI_EXPLORER_SWITCH_Y_PIN)) pressed |= cpcexplorer::launcher::ButtonY;
     if (!gpio_get(PIMORONI_EXPLORER_SWITCH_Z_PIN)) pressed |= cpcexplorer::launcher::ButtonZ;
@@ -290,6 +310,9 @@ std::uint8_t read_menu_buttons() {
 
 void init_menu_buttons() {
     constexpr unsigned pins[] = {
+        PIMORONI_EXPLORER_SWITCH_A_PIN,
+        PIMORONI_EXPLORER_SWITCH_B_PIN,
+        PIMORONI_EXPLORER_SWITCH_C_PIN,
         PIMORONI_EXPLORER_SWITCH_X_PIN,
         PIMORONI_EXPLORER_SWITCH_Y_PIN,
         PIMORONI_EXPLORER_SWITCH_Z_PIN,
@@ -299,23 +322,36 @@ void init_menu_buttons() {
         gpio_set_dir(pin, GPIO_IN);
         gpio_pull_up(pin);
     }
+#if defined(CPCEXPLORER_QWST_PAD)
+    cpcexplorer::qwst::pico::init();
+#endif
+}
+
+cpcexplorer::input::ButtonMask read_gameplay_buttons() {
+    auto result = static_cast<cpcexplorer::input::ButtonMask>(read_menu_buttons());
+#if defined(CPCEXPLORER_QWST_PAD)
+    const auto now_ms = to_ms_since_boot(get_absolute_time());
+    const auto pad = cpcexplorer::qwst::pico::poll(now_ms);
+    result |= static_cast<cpcexplorer::input::ButtonMask>(pad << cpcexplorer::input::PadA);
+#endif
+    return result;
 }
 
 void apply_gameplay_input(cpcexplorer::input::Profile profile,
                           const cpcexplorer::input::Transition& transition) {
     const auto keys = cpcexplorer::input::bindings(profile);
-    const auto release = [&](std::uint8_t mask, int key) {
-        if ((transition.released & mask) != 0) cpcexplorer::key_up(key);
-    };
-    const auto press = [&](std::uint8_t mask, int key) {
-        if ((transition.pressed & mask) != 0) cpcexplorer::key_down(key);
-    };
-    release(cpcexplorer::input::KeyLeft, keys.left);
-    release(cpcexplorer::input::KeyRight, keys.right);
-    release(cpcexplorer::input::KeyJump, keys.action);
-    press(cpcexplorer::input::KeyLeft, keys.left);
-    press(cpcexplorer::input::KeyRight, keys.right);
-    press(cpcexplorer::input::KeyJump, keys.action);
+    for (std::size_t index = 0; index < keys.keys.size(); ++index) {
+        const int key = keys.keys[index];
+        if (key == 0) continue;
+        bool first = true;
+        for (std::size_t earlier = 0; earlier < index; ++earlier)
+            if (keys.keys[earlier] == key) { first = false; break; }
+        if (!first) continue;
+        const bool was_held = cpcexplorer::input::key_held(keys, transition.previous, key);
+        const bool now_held = cpcexplorer::input::key_held(keys, transition.held, key);
+        if (was_held && !now_held) cpcexplorer::key_up(key);
+        if (!was_held && now_held) cpcexplorer::key_down(key);
+    }
 }
 
 #if defined(CPCEXPLORER_LIBRARY_UPLOAD)
@@ -337,8 +373,15 @@ void draw_upload_progress(std::uint32_t received, std::uint32_t expected) {
     }
 #endif
     cpcexplorer::init();
-#if defined(CPCEXPLORER_AY_AUDIO)
-    if (cpcexplorer::audio::init(cpcexplorer::AudioSampleRate)) {
+#if defined(CPCEXPLORER_DUAL_CORE_AY)
+    cpcexplorer::set_external_ay_renderer(true);
+#elif defined(CPCEXPLORER_AY_AUDIO)
+#if defined(CPCEXPLORER_CONTINUOUS_AMP)
+    constexpr auto amplifier_policy = cpcexplorer::audio::AmplifierPolicy::HoldEnabled;
+#else
+    constexpr auto amplifier_policy = cpcexplorer::audio::AmplifierPolicy::GateOnPlayback;
+#endif
+    if (cpcexplorer::audio::init(cpcexplorer::AudioSampleRate, amplifier_policy)) {
         cpcexplorer::set_audio_callback([](const float* samples, std::size_t count, void*) {
             cpcexplorer::audio::submit(samples, count);
         });
@@ -348,7 +391,9 @@ void draw_upload_progress(std::uint32_t received, std::uint32_t expected) {
 #endif
     bool loaded = true;
     if (entry.type == cpcexplorer::launcher::EntryType::Snapshot) {
-        if (entry.snapshot_data != nullptr) {
+        if (entry.packed) {
+            loaded = cpcexplorer::load_packed_sna(entry.packed_record);
+        } else if (entry.snapshot_data != nullptr) {
             loaded = cpcexplorer::load_sna(entry.snapshot_data, entry.snapshot_size);
         } else {
             loaded = (entry.snapshot_id != nullptr) &&
@@ -363,6 +408,14 @@ void draw_upload_progress(std::uint32_t received, std::uint32_t expected) {
         draw_centered("SNAPSHOT LOAD FAILED", 108, 2, kYellow, kCpcBlue);
         while (true) tight_loop_contents();
     }
+#if defined(CPCEXPLORER_DUAL_CORE_AY)
+    std::array<std::uint8_t, 16> ay_registers{};
+    cpcexplorer::copy_ay_registers(ay_registers.data(), ay_registers.size());
+    if (!cpcexplorer::dual_core_ay::launch_and_start(
+            ay_registers.data(), ay_registers.size(), 1)) {
+        std::printf("audio=disabled reason=dual_core_start_failed\n");
+    }
+#endif
 
     const auto diag = cpcexplorer::diagnostics();
     std::printf("state=%u framebuffer=%u ram=%u bytes\n",
@@ -372,7 +425,9 @@ void draw_upload_progress(std::uint32_t received, std::uint32_t expected) {
 #if defined(CPCEXPLORER_MENU) || defined(CPCEXPLORER_LIBRARY)
     cpcexplorer::input::Adapter gameplay_input;
     const auto gameplay_profile = entry.control_profile;
-    gameplay_input.reset(gameplay_profile, read_menu_buttons());
+    cpcexplorer::set_digital_joystick(
+        cpcexplorer::input::bindings(gameplay_profile).digital_joystick);
+    gameplay_input.reset(gameplay_profile, read_gameplay_buttons());
 #endif
     absolute_time_t next = get_absolute_time();
 #if defined(CPCEXPLORER_PERF_DIAGNOSTICS)
@@ -391,7 +446,7 @@ void draw_upload_progress(std::uint32_t received, std::uint32_t expected) {
 #endif
         next = delayed_by_ms(next, 20);
 #if defined(CPCEXPLORER_MENU) || defined(CPCEXPLORER_LIBRARY)
-        apply_gameplay_input(gameplay_profile, gameplay_input.update(read_menu_buttons()));
+        apply_gameplay_input(gameplay_profile, gameplay_input.update(read_gameplay_buttons()));
 #endif
 #if defined(CPCEXPLORER_PERF_DIAGNOSTICS)
         const std::uint64_t execution_start_us = measurement_active ? time_us_64() : 0;
@@ -475,7 +530,38 @@ void draw_upload_progress(std::uint32_t received, std::uint32_t expected) {
                         ? length : static_cast<int>(sizeof(telemetry) - 1);
                     stdio_put_string(telemetry, bounded_length, false, false);
                 }
-#if defined(CPCEXPLORER_AY_AUDIO)
+#if defined(CPCEXPLORER_DUAL_CORE_AY)
+                const auto dual = cpcexplorer::dual_core_ay::telemetry();
+                const auto output_stats = cpcexplorer::audio::diagnostics();
+                std::memset(telemetry, 0, sizeof(telemetry));
+                const int audio_length = std::snprintf(
+                    telemetry, sizeof(telemetry),
+                    "CPCAUDIO mode=core1 state=%u produced=%u consumed=%u "
+                    "seqerr=%u qpeak=%u qfull=%u late=%u pcm=%u played=%u "
+                    "underruns=%u overruns=%u render_p95_us=%u render_max_us=%u "
+                    "deadline_miss=%u stack_high=%u\n",
+                    static_cast<unsigned>(dual.state),
+                    static_cast<unsigned>(dual.producer_events),
+                    static_cast<unsigned>(dual.consumed_events),
+                    static_cast<unsigned>(dual.sequence_errors),
+                    static_cast<unsigned>(dual.queue_peak),
+                    static_cast<unsigned>(dual.queue_full),
+                    static_cast<unsigned>(dual.late_events),
+                    static_cast<unsigned>(dual.pcm_samples),
+                    static_cast<unsigned>(output_stats.played),
+                    static_cast<unsigned>(output_stats.underruns),
+                    static_cast<unsigned>(output_stats.overruns),
+                    static_cast<unsigned>(dual.render_p95_upper_us),
+                    static_cast<unsigned>(dual.render_max_us),
+                    static_cast<unsigned>(dual.deadline_misses),
+                    static_cast<unsigned>(dual.stack_high_water_bytes));
+                if (audio_length > 0) {
+                    const int bounded_audio_length =
+                        audio_length < static_cast<int>(sizeof(telemetry))
+                            ? audio_length : static_cast<int>(sizeof(telemetry) - 1);
+                    stdio_put_string(telemetry, bounded_audio_length, false, false);
+                }
+#elif defined(CPCEXPLORER_AY_AUDIO)
                 const auto ay_stats = cpcexplorer::audio_diagnostics();
                 const auto output_stats = cpcexplorer::audio::diagnostics();
                 std::memset(telemetry, 0, sizeof(telemetry));
@@ -514,14 +600,26 @@ int main() {
 #if defined(CPCEXPLORER_LIBRARY)
     #if defined(CPCEXPLORER_LIBRARY_UPLOAD)
     static cpcexplorer::storage::PicoFlash physical_flash;
-    const bool flash_ready = physical_flash.probe();
+    #if defined(CPCEXPLORER_STAGE4H5D_AUDIO_CORRECTION)
+    const bool audio_core_idle = cpcexplorer::dual_core_ay::launch_idle();
+    #else
+    const bool audio_core_idle = true;
+    #endif
+    const bool flash_ready = audio_core_idle && physical_flash.probe();
     static cpcexplorer::storage::Installer installer(physical_flash);
+    #if defined(CPCEXPLORER_INTERNAL_LIBRARY)
+    static cpcexplorer::migration::Transport migration_transport(
+        physical_flash, installer, installer.scratch_buffer(), installer.scratch_bytes());
+    const bool migration_recovery_ready = flash_ready && migration_transport.recover();
+    #else
+    const bool migration_recovery_ready = true;
+    #endif
     #if defined(CPCEXPLORER_LIBRARY_REMOVE)
     const bool recovery_ready = flash_ready && installer.recover_pending_removal();
     #else
     const bool recovery_ready = true;
     #endif
-    const bool storage_ready = flash_ready && recovery_ready;
+    const bool storage_ready = flash_ready && recovery_ready && migration_recovery_ready;
     static cpcexplorer::upload::Session upload_session;
     static cpcexplorer::upload::StreamDecoder decoder;
     std::uint32_t upload_activity_ms = 0;
@@ -531,6 +629,13 @@ int main() {
     cpcexplorer::launcher::configure_library(
         reinterpret_cast<const std::uint8_t*>(cpcexplorer::library::kLibraryXipAddress),
         cpcexplorer::library::kLibraryBytes);
+    #if defined(CPCEXPLORER_INTERNAL_LIBRARY)
+    const bool packed_ready = cpcexplorer::launcher::configure_packed_library(
+        reinterpret_cast<const std::uint8_t*>(0x10000000U + cpcexplorer::packed::kPackFlashOffset),
+        cpcexplorer::packed::kPackLimitFlashOffset - cpcexplorer::packed::kPackFlashOffset);
+    installer.set_reserved_id_predicate(cpcexplorer::launcher::has_protected_snapshot_id);
+    std::printf("packed_library=%s\n", packed_ready ? "ready" : "fallback");
+    #endif
     // Use the same Pico SDK program version embedded in binary_info. Keeping a
     // second preprocessor identity ladder here allowed feature macros such as
     // PERF_DIAGNOSTICS to mislabel newer firmware as 4C.2-DIAG.
@@ -567,11 +672,17 @@ int main() {
                         physical_flash.identity(), static_cast<unsigned>(physical_flash.capacity()),
                         static_cast<unsigned>(cpcexplorer::launcher::entry_count()));
                 } else if (frame.command == Command::Status) {
-                    std::printf("CPCU1 STATUS upload=%s flash=%s capacity=%u entries=%u received=%u\n",
+                    std::printf("CPCU1 STATUS upload=%s flash=%s capacity=%u entries=%u received=%u",
                         upload_session.active() ? "active" : "idle", physical_flash.identity(),
                         static_cast<unsigned>(physical_flash.capacity()),
                         static_cast<unsigned>(cpcexplorer::launcher::entry_count()),
                         static_cast<unsigned>(upload_session.received()));
+                    #if defined(CPCEXPLORER_INTERNAL_LIBRARY)
+                    std::printf(" migration=%s migration_received=%u",
+                        cpcexplorer::migration::state_name(migration_transport.state()),
+                        static_cast<unsigned>(migration_transport.received()));
+                    #endif
+                    std::printf("\n");
                     for (std::size_t i = 0; i < cpcexplorer::launcher::entry_count(); ++i) {
                         const auto item = cpcexplorer::launcher::entry(i);
                         const char* id = i == 0 ? "locomotive_basic" : item.snapshot_id;
@@ -579,9 +690,117 @@ int main() {
                                     id == nullptr ? "unknown" : id, item.display_name);
                     }
                     std::printf("CPCU1 END\n");
+                #if defined(CPCEXPLORER_INTERNAL_LIBRARY)
+                } else if (frame.command == Command::MigrationLayout) {
+                    if (frame.payload_length != 0) {
+                        std::printf("CPCU1 ERROR migration_layout_payload\n");
+                    } else {
+                        std::printf("CPCU1 MIGRATION LAYOUT flash=16777216 firmware=000000-3fffff "
+                                    "catalog_a=400000-403fff catalog_b=404000-407fff "
+                                    "legacy=408000-43afff pack=43b000-466fff guard=ff0000-ffffff\n");
+                    }
+                } else if (frame.command == Command::MigrationStatus) {
+                    if (frame.payload_length != 0) {
+                        std::printf("CPCU1 ERROR migration_status_payload\n");
+                    } else {
+                        std::printf("CPCU1 MIGRATION STATUS state=%s received=%u error=%s\n",
+                            cpcexplorer::migration::state_name(migration_transport.state()),
+                            static_cast<unsigned>(migration_transport.received()),
+                            migration_transport.error());
+                    }
+                } else if (frame.command == Command::MigrationBegin) {
+                    if (!storage_ready || upload_session.active()) {
+                        std::printf("CPCU1 ERROR migration_storage_or_upload\n");
+                    } else if (!handshake || now_ms - handshake_ms > 10000 ||
+                               frame.payload_length != 56 ||
+                               std::memcmp(frame.payload, "MIGRATE\0", 8) != 0) {
+                        std::printf("CPCU1 ERROR migration_confirmation_required\n");
+                    } else {
+                        cpcexplorer::migration::Manifest manifest{};
+                        std::memcpy(&manifest.protocol_version, frame.payload + 8, 4);
+                        std::memcpy(&manifest.flash_offset, frame.payload + 12, 4);
+                        std::memcpy(&manifest.image_bytes, frame.payload + 16, 4);
+                        std::memcpy(&manifest.image_crc32, frame.payload + 20, 4);
+                        std::memcpy(manifest.image_sha256, frame.payload + 24, 32);
+                        handshake = false; upload_activity_ms = now_ms;
+                        if (migration_transport.begin(
+                                manifest, cpcexplorer::launcher::has_builtin_snapshot_id(
+                                              "knight_tyme"))) {
+                            std::printf("CPCU1 MIGRATION BEGIN OK offset=%08lx bytes=%u\n",
+                                static_cast<unsigned long>(manifest.flash_offset),
+                                static_cast<unsigned>(manifest.image_bytes));
+                        } else {
+                            std::printf("CPCU1 ERROR migration_begin_%s\n",
+                                        migration_transport.error());
+                        }
+                    }
+                } else if (frame.command == Command::MigrationPage) {
+                    upload_activity_ms = now_ms;
+                    if (migration_transport.write_page(frame.sequence, frame.payload,
+                                                       frame.payload_length)) {
+                        std::printf("CPCU1 MIGRATION ACK %u %u\n",
+                            static_cast<unsigned>(frame.sequence),
+                            static_cast<unsigned>(migration_transport.received()));
+                    } else {
+                        std::printf("CPCU1 ERROR migration_page_%s\n", migration_transport.error());
+                    }
+                } else if (frame.command == Command::MigrationVerify) {
+                    if (frame.payload_length != 0 || !migration_transport.verify()) {
+                        std::printf("CPCU1 ERROR migration_verify_%s\n", migration_transport.error());
+                    } else {
+                        std::printf("CPCU1 MIGRATION VERIFIED crc=%08lx\n",
+                            static_cast<unsigned long>(cpcexplorer::migration::kPackCrc32));
+                    }
+                } else if (frame.command == Command::MigrationActivate) {
+                    if (frame.payload_length != 0 || !migration_transport.activate()) {
+                        std::printf("CPCU1 ERROR migration_activate_%s\n", migration_transport.error());
+                    } else {
+                        cpcexplorer::launcher::configure_packed_library(
+                            reinterpret_cast<const std::uint8_t*>(0x10000000U +
+                                cpcexplorer::packed::kPackFlashOffset),
+                            cpcexplorer::packed::kPackLimitFlashOffset -
+                                cpcexplorer::packed::kPackFlashOffset);
+                        installer.set_reserved_id_predicate(
+                            cpcexplorer::launcher::has_protected_snapshot_id);
+                        menu.reset(read_menu_buttons(), now_ms); draw_menu(menu);
+                        std::printf("CPCU1 MIGRATION ACTIVE crc=%08lx entries=%u\n",
+                            static_cast<unsigned long>(cpcexplorer::migration::kPackCrc32),
+                            static_cast<unsigned>(cpcexplorer::launcher::entry_count()));
+                    }
+                } else if (frame.command == Command::MigrationAbort) {
+                    if (frame.payload_length != 0) {
+                        std::printf("CPCU1 ERROR migration_abort_payload\n");
+                    } else {
+                        migration_transport.abort(); handshake = false; draw_menu(menu);
+                        std::printf("CPCU1 MIGRATION ABORTED state=%s\n",
+                            cpcexplorer::migration::state_name(migration_transport.state()));
+                    }
+                } else if (frame.command == Command::MigrationRead) {
+                    std::uint32_t offset = 0, length = 0;
+                    if (frame.payload_length == 8) {
+                        std::memcpy(&offset, frame.payload, 4);
+                        std::memcpy(&length, frame.payload + 4, 4);
+                    }
+                    if (frame.payload_length != 8 ||
+                        !cpcexplorer::migration::is_read_range(offset, length)) {
+                        std::printf("CPCU1 ERROR migration_read_bounds\n");
+                    } else {
+                        const auto* data = physical_flash.mapped_library() +
+                            (offset - cpcexplorer::library::kLibraryFlashOffset);
+                        std::printf("CPCU1 MIGRATION DATA %u ", static_cast<unsigned>(offset));
+                        for (std::uint32_t i = 0; i < length; ++i) std::printf("%02x", data[i]);
+                        std::printf("\n");
+                    }
+                #endif
                 } else if (frame.command == Command::Begin) {
                     if (!storage_ready) {
                         std::printf("CPCU1 ERROR storage_unavailable_%s\n", installer.error());
+                    #if defined(CPCEXPLORER_INTERNAL_LIBRARY)
+                    } else if (migration_transport.state() == cpcexplorer::migration::State::Receiving ||
+                               migration_transport.state() == cpcexplorer::migration::State::Verified ||
+                               migration_transport.state() == cpcexplorer::migration::State::Ambiguous) {
+                        std::printf("CPCU1 ERROR migration_active\n");
+                    #endif
                     } else if (!handshake || now_ms - handshake_ms > 10000 || frame.payload_length != 8) {
                         std::printf("CPCU1 ERROR handshake_required\n");
                     } else {
@@ -669,12 +888,27 @@ int main() {
             upload_session.abort(installer); handshake = false; draw_menu(menu);
             std::printf("CPCU1 ERROR transaction_timeout\n"); std::fflush(stdout);
         }
+        #if defined(CPCEXPLORER_INTERNAL_LIBRARY)
+        if (migration_transport.state() == cpcexplorer::migration::State::Receiving &&
+            static_cast<std::uint32_t>(now_ms - upload_activity_ms) >=
+                cpcexplorer::upload::Session::transaction_timeout_ms) {
+            migration_transport.abort(); handshake = false; draw_menu(menu);
+            std::printf("CPCU1 ERROR migration_timeout state=%s\n",
+                cpcexplorer::migration::state_name(migration_transport.state()));
+            std::fflush(stdout);
+        }
+        if (migration_transport.state() == cpcexplorer::migration::State::Receiving ||
+            migration_transport.state() == cpcexplorer::migration::State::Verified ||
+            migration_transport.state() == cpcexplorer::migration::State::Ambiguous) {
+            sleep_ms(5); continue;
+        }
+        #endif
         if (upload_session.active()) { sleep_ms(5); continue; }
         #endif
         const auto update = menu.update(read_menu_buttons(), to_ms_since_boot(get_absolute_time()));
         if (update.selection_changed) draw_entries(menu);
         if (update.launch) {
-            const auto entry = cpcexplorer::launcher::entry(menu.selected());
+            const auto entry = menu.selected_entry();
             std::printf("menu launch=%s\n", entry.display_name);
             draw_centered("LOADING", 205, 2, kYellow, kCpcBlue);
             run_emulator(entry);

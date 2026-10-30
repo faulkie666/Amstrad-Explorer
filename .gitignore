@@ -2,6 +2,7 @@
 /backups/
 /snapshots/
 /artifacts/
+/ExplorerReady/
 /.cache/
 .vs/
 .vscode/

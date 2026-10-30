@@ -11,12 +11,24 @@ option(CPCEXPLORER_STAGE4F6_SRAM_STEP "Build Stage 4F.6 with only z80_execute_st
 option(CPCEXPLORER_STAGE4G21_DIZZY_CONTROLS "Build Stage 4G.2.1 metadata-driven controls candidate" OFF)
 option(CPCEXPLORER_STAGE4H1_AY_AUDIO "Build Stage 4H.1 AY speaker-audio candidate" OFF)
 option(CPCEXPLORER_STAGE4H1A_AUDIO_DIAG "Build Stage 4H.1A corrected AY diagnostics candidate" OFF)
+option(CPCEXPLORER_STAGE4H3_SPEAKER_DIAG "Build standalone Stage 4H.3 physical speaker diagnostic" OFF)
+option(CPCEXPLORER_STAGE4H4_CONTINUOUS_AMP "Build Stage 4H.4 with continuous gameplay amplifier enable" OFF)
+option(CPCEXPLORER_STAGE4H5A_SRAM_LINK_PROBE "Link-only Stage 4H.5A scratch-SRAM layout probe; never deploy" OFF)
+option(CPCEXPLORER_STAGE4H5B_DUAL_CORE_AY "Build isolated Stage 4H.5B dual-core AY experiment" OFF)
+option(CPCEXPLORER_STAGE4H5D_AUDIO_CORRECTION "Build Stage 4H.5D flash/audio correction experiment" OFF)
+option(CPCEXPLORER_STAGE4I6_INTERNAL_LIBRARY "Build isolated Stage 4I.6 CPXPCK2 experiment" OFF)
+option(CPCEXPLORER_STAGE4I7_CONTROLS "Build isolated Stage 4I.7 six-button controls experiment" OFF)
+option(CPCEXPLORER_STAGE4I8_MIGRATION "Build isolated Stage 4I.8 restricted migration transport" OFF)
+option(CPCEXPLORER_STAGE4J1_QWST "Build isolated Qw/ST Pad and game-audio acceptance experiment" OFF)
+option(CPCEXPLORER_STAGE4J2C_KNIGHT "Build isolated Qw/ST Knight Tyme orientation correction" OFF)
+option(CPCEXPLORER_STAGE4J3_MIGRATION_FIX "Build isolated two-descriptor migration precondition correction" OFF)
+option(CPCEXPLORER_STAGE4K3_INCREMENTAL_LIBRARY "Build isolated packed-plus-legacy launcher overlay" OFF)
 set(CPCEXPLORER_STAGE4F2_VARIANT "NONE" CACHE STRING "Stage 4F.2 isolated build: NONE, FAST_DISPLAY or OPT_DISPLAY")
 set_property(CACHE CPCEXPLORER_STAGE4F2_VARIANT PROPERTY STRINGS NONE FAST_DISPLAY OPT_DISPLAY)
 set(CPCEXPLORER_DEFAULT_ENGINE "REFERENCE" CACHE STRING "Runtime engine selected by firmware main: REFERENCE or FAST")
 set_property(CACHE CPCEXPLORER_DEFAULT_ENGINE PROPERTY STRINGS REFERENCE FAST)
-set(CPCEXPLORER_STARTUP "BASIC" CACHE STRING "Startup mode: BASIC, KNIGHT_TYME, MENU, LIBRARY, LIBRARY_UPLOAD, LIBRARY_REMOVE, LIBRARY_CONTROLS, LIBRARY_DIAGNOSTIC, LIBRARY_DIAGNOSTIC_SRAM or LIBRARY_FAST")
-set_property(CACHE CPCEXPLORER_STARTUP PROPERTY STRINGS BASIC KNIGHT_TYME MENU LIBRARY LIBRARY_UPLOAD LIBRARY_REMOVE LIBRARY_CONTROLS LIBRARY_DIAGNOSTIC LIBRARY_DIAGNOSTIC_SRAM LIBRARY_FAST)
+set(CPCEXPLORER_STARTUP "BASIC" CACHE STRING "Startup mode: BASIC, KNIGHT_TYME, MENU, LIBRARY, LIBRARY_UPLOAD, LIBRARY_REMOVE, LIBRARY_CONTROLS, LIBRARY_DIAGNOSTIC, LIBRARY_DIAGNOSTIC_SRAM, LIBRARY_FAST or SPEAKER_DIAGNOSTIC")
+set_property(CACHE CPCEXPLORER_STARTUP PROPERTY STRINGS BASIC KNIGHT_TYME MENU LIBRARY LIBRARY_UPLOAD LIBRARY_REMOVE LIBRARY_CONTROLS LIBRARY_DIAGNOSTIC LIBRARY_DIAGNOSTIC_SRAM LIBRARY_FAST SPEAKER_DIAGNOSTIC)
 set(CPCEXPLORER_FAST_PRESENTATION_DIVISOR "4" CACHE STRING "Fast engine display cadence: 4=12.5 Hz, 2=25 Hz")
 set_property(CACHE CPCEXPLORER_FAST_PRESENTATION_DIVISOR PROPERTY STRINGS 4 2)
 
@@ -45,14 +57,21 @@ add_custom_command(
     DEPENDS "${CPC_ROM}" "${CMAKE_CURRENT_LIST_DIR}/tools/embed_rom.py"
     VERBATIM)
 
-add_library(cpc_game_library STATIC src/game_library.cpp src/upload_protocol.cpp src/library_installer.cpp)
+add_library(cpc_game_library STATIC src/game_library.cpp src/packed_library.cpp src/packed_migration.cpp src/upload_protocol.cpp src/library_installer.cpp)
 target_include_directories(cpc_game_library PUBLIC src)
 add_library(cpc_gameplay_input STATIC src/gameplay_input.cpp)
 target_include_directories(cpc_gameplay_input PUBLIC src)
+if(CPCEXPLORER_STAGE4J2C_KNIGHT)
+    target_compile_definitions(cpc_gameplay_input PRIVATE CPCEXPLORER_STAGE4J2C_KNIGHT=1)
+endif()
+add_library(cpc_qwst_pad STATIC src/qwst_pad.cpp)
+target_include_directories(cpc_qwst_pad PUBLIC src)
 add_library(cpc_performance_metrics STATIC src/performance_metrics.cpp)
 target_include_directories(cpc_performance_metrics PUBLIC src)
 add_library(cpc_display_fit STATIC src/display_fit.cpp)
 target_include_directories(cpc_display_fit PUBLIC src)
+add_library(cpc_speaker_tone_sequence STATIC src/speaker_tone_sequence.cpp)
+target_include_directories(cpc_speaker_tone_sequence PUBLIC src)
 add_library(cpc_core STATIC src/cpc_core.cpp "${GENERATED_ROM}")
 target_include_directories(cpc_core PUBLIC src PRIVATE "${GENERATED_DIR}" third_party/chips)
 target_compile_definitions(cpc_core PRIVATE CHIPS_NO_ASSERT)
@@ -109,7 +128,12 @@ if(CPCEXPLORER_ENABLE_FAST_ENGINE)
 endif()
 
 if(CPCEXPLORER_BUILD_FIRMWARE)
-    if(CPCEXPLORER_STARTUP STREQUAL "KNIGHT_TYME" OR CPCEXPLORER_STARTUP STREQUAL "MENU" OR CPCEXPLORER_STARTUP STREQUAL "LIBRARY" OR CPCEXPLORER_STARTUP STREQUAL "LIBRARY_UPLOAD" OR CPCEXPLORER_STARTUP STREQUAL "LIBRARY_REMOVE" OR CPCEXPLORER_STARTUP STREQUAL "LIBRARY_CONTROLS" OR CPCEXPLORER_STARTUP STREQUAL "LIBRARY_DIAGNOSTIC" OR CPCEXPLORER_STARTUP STREQUAL "LIBRARY_DIAGNOSTIC_SRAM" OR CPCEXPLORER_STARTUP STREQUAL "LIBRARY_FAST")
+    if(CPCEXPLORER_STARTUP STREQUAL "SPEAKER_DIAGNOSTIC")
+        if(NOT CPCEXPLORER_STAGE4H3_SPEAKER_DIAG)
+            message(FATAL_ERROR "SPEAKER_DIAGNOSTIC requires CPCEXPLORER_STAGE4H3_SPEAKER_DIAG=ON")
+        endif()
+        set(CPCEXPLORER_TARGET cpc_explorer_speaker_diag)
+    elseif(CPCEXPLORER_STARTUP STREQUAL "KNIGHT_TYME" OR CPCEXPLORER_STARTUP STREQUAL "MENU" OR CPCEXPLORER_STARTUP STREQUAL "LIBRARY" OR CPCEXPLORER_STARTUP STREQUAL "LIBRARY_UPLOAD" OR CPCEXPLORER_STARTUP STREQUAL "LIBRARY_REMOVE" OR CPCEXPLORER_STARTUP STREQUAL "LIBRARY_CONTROLS" OR CPCEXPLORER_STARTUP STREQUAL "LIBRARY_DIAGNOSTIC" OR CPCEXPLORER_STARTUP STREQUAL "LIBRARY_DIAGNOSTIC_SRAM" OR CPCEXPLORER_STARTUP STREQUAL "LIBRARY_FAST")
         set(CPCEXPLORER_SNAPSHOT "${CMAKE_CURRENT_LIST_DIR}/snapshots/knight-tyme.sna" CACHE FILEPATH "Local 64K Knight Tyme SNA")
         set(GENERATED_SNAPSHOT "${GENERATED_DIR}/knight_tyme_snapshot.h")
         add_custom_command(
@@ -120,7 +144,29 @@ if(CPCEXPLORER_BUILD_FIRMWARE)
         target_sources(cpc_core PRIVATE "${GENERATED_SNAPSHOT}")
         target_compile_definitions(cpc_core PRIVATE CPCEXPLORER_KNIGHT_TYME=1)
         if(CPCEXPLORER_STARTUP STREQUAL "LIBRARY_FAST")
-            if(CPCEXPLORER_STAGE4H1A_AUDIO_DIAG)
+            if(CPCEXPLORER_STAGE4K3_INCREMENTAL_LIBRARY)
+                set(CPCEXPLORER_TARGET cpc_explorer_incremental_library_exp)
+            elseif(CPCEXPLORER_STAGE4J3_MIGRATION_FIX)
+                set(CPCEXPLORER_TARGET cpc_explorer_migration_catalog_fix_exp)
+            elseif(CPCEXPLORER_STAGE4J2C_KNIGHT)
+                set(CPCEXPLORER_TARGET cpc_explorer_qwst_knight_corrected_exp)
+            elseif(CPCEXPLORER_STAGE4J1_QWST)
+                set(CPCEXPLORER_TARGET cpc_explorer_qwst_audio_exp)
+            elseif(CPCEXPLORER_STAGE4I8_MIGRATION)
+                set(CPCEXPLORER_TARGET cpc_explorer_flash_migration_exp)
+            elseif(CPCEXPLORER_STAGE4I7_CONTROLS)
+                set(CPCEXPLORER_TARGET cpc_explorer_internal_library_controls_exp)
+            elseif(CPCEXPLORER_STAGE4I6_INTERNAL_LIBRARY)
+                set(CPCEXPLORER_TARGET cpc_explorer_internal_library_exp)
+            elseif(CPCEXPLORER_STAGE4H5D_AUDIO_CORRECTION)
+                set(CPCEXPLORER_TARGET cpc_explorer_dual_core_ay_corrected)
+            elseif(CPCEXPLORER_STAGE4H5B_DUAL_CORE_AY)
+                set(CPCEXPLORER_TARGET cpc_explorer_dual_core_ay_exp)
+            elseif(CPCEXPLORER_STAGE4H5A_SRAM_LINK_PROBE)
+                set(CPCEXPLORER_TARGET cpc_explorer_stage4h5a_link_probe)
+            elseif(CPCEXPLORER_STAGE4H4_CONTINUOUS_AMP)
+                set(CPCEXPLORER_TARGET cpc_explorer_ay_audio_continuous)
+            elseif(CPCEXPLORER_STAGE4H1A_AUDIO_DIAG)
                 set(CPCEXPLORER_TARGET cpc_explorer_ay_audio_diag)
             elseif(CPCEXPLORER_STAGE4H1_AY_AUDIO)
                 set(CPCEXPLORER_TARGET cpc_explorer_ay_audio)
@@ -160,7 +206,7 @@ if(CPCEXPLORER_BUILD_FIRMWARE)
     elseif(CPCEXPLORER_STARTUP STREQUAL "BASIC")
         set(CPCEXPLORER_TARGET cpc_explorer)
     else()
-        message(FATAL_ERROR "CPCEXPLORER_STARTUP must be BASIC, KNIGHT_TYME, MENU, LIBRARY, LIBRARY_UPLOAD, LIBRARY_REMOVE, LIBRARY_CONTROLS, LIBRARY_DIAGNOSTIC, LIBRARY_DIAGNOSTIC_SRAM or LIBRARY_FAST")
+        message(FATAL_ERROR "CPCEXPLORER_STARTUP must be BASIC, KNIGHT_TYME, MENU, LIBRARY, LIBRARY_UPLOAD, LIBRARY_REMOVE, LIBRARY_CONTROLS, LIBRARY_DIAGNOSTIC, LIBRARY_DIAGNOSTIC_SRAM, LIBRARY_FAST or SPEAKER_DIAGNOSTIC")
     endif()
     pico_sdk_init()
     if(CPCEXPLORER_STARTUP STREQUAL "LIBRARY_FAST")
@@ -196,6 +242,36 @@ if(CPCEXPLORER_BUILD_FIRMWARE)
         if(CPCEXPLORER_STAGE4H1A_AUDIO_DIAG AND NOT CPCEXPLORER_STAGE4H1_AY_AUDIO)
             message(FATAL_ERROR "Stage 4H.1A diagnostics requires the complete Stage 4H.1 audio path")
         endif()
+        if(CPCEXPLORER_STAGE4H4_CONTINUOUS_AMP AND NOT CPCEXPLORER_STAGE4H1A_AUDIO_DIAG)
+            message(FATAL_ERROR "Stage 4H.4 continuous amplifier requires the complete Stage 4H.1A baseline")
+        endif()
+        if(CPCEXPLORER_STAGE4H5B_DUAL_CORE_AY AND NOT CPCEXPLORER_STAGE4H4_CONTINUOUS_AMP)
+            message(FATAL_ERROR "Stage 4H.5B dual-core AY requires the complete Stage 4H.4 baseline")
+        endif()
+        if(CPCEXPLORER_STAGE4H5D_AUDIO_CORRECTION AND NOT CPCEXPLORER_STAGE4H4_CONTINUOUS_AMP)
+            message(FATAL_ERROR "Stage 4H.5D correction requires the complete Stage 4H.4 baseline")
+        endif()
+        if(CPCEXPLORER_STAGE4I6_INTERNAL_LIBRARY AND NOT CPCEXPLORER_STAGE4H5D_AUDIO_CORRECTION)
+            message(FATAL_ERROR "Stage 4I.6 requires the complete Stage 4H.5D baseline")
+        endif()
+        if(CPCEXPLORER_STAGE4I7_CONTROLS AND NOT CPCEXPLORER_STAGE4I6_INTERNAL_LIBRARY)
+            message(FATAL_ERROR "Stage 4I.7 controls requires the complete Stage 4I.6 baseline")
+        endif()
+        if(CPCEXPLORER_STAGE4I8_MIGRATION AND NOT CPCEXPLORER_STAGE4I7_CONTROLS)
+            message(FATAL_ERROR "Stage 4I.8 migration requires the complete Stage 4I.7 baseline")
+        endif()
+        if(CPCEXPLORER_STAGE4J1_QWST AND NOT CPCEXPLORER_STAGE4I8_MIGRATION)
+            message(FATAL_ERROR "Qw/ST experiment requires the complete Stage 4I.8 baseline")
+        endif()
+        if(CPCEXPLORER_STAGE4J2C_KNIGHT AND NOT CPCEXPLORER_STAGE4J1_QWST)
+            message(FATAL_ERROR "Stage 4J.2C requires the complete Stage 4J.1 Qw/ST baseline")
+        endif()
+        if(CPCEXPLORER_STAGE4J3_MIGRATION_FIX AND NOT CPCEXPLORER_STAGE4J1_QWST)
+            message(FATAL_ERROR "Stage 4J.3 requires the complete Stage 4J.1 Qw/ST baseline")
+        endif()
+        if(CPCEXPLORER_STAGE4K3_INCREMENTAL_LIBRARY AND NOT CPCEXPLORER_STAGE4J3_MIGRATION_FIX)
+            message(FATAL_ERROR "Stage 4K.3 requires the complete Stage 4J.3 migration-fix baseline")
+        endif()
         if(CPCEXPLORER_STAGE4F2_VARIANT STREQUAL "FAST_DISPLAY" AND
            (CPCEXPLORER_FAST_RAM_ACCESS OR CPCEXPLORER_FAST_Z80_SRAM OR CPCEXPLORER_STAGE4F1_EXPERIMENT))
             message(FATAL_ERROR "Stage 4F.2 FAST_DISPLAY must use the unoptimised Stage 4E.2 Z80 path")
@@ -209,14 +285,40 @@ if(CPCEXPLORER_BUILD_FIRMWARE)
     if(CPCEXPLORER_STARTUP STREQUAL "LIBRARY_DIAGNOSTIC_SRAM")
         target_link_libraries(cpc_core PRIVATE pico_platform)
     endif()
-    add_executable(${CPCEXPLORER_TARGET}
-        src/main.cpp
-        src/launcher.cpp
-        src/display/st7789.c
-        src/display/st7789_parallel.pio)
+    if(CPCEXPLORER_STARTUP STREQUAL "SPEAKER_DIAGNOSTIC")
+        add_executable(${CPCEXPLORER_TARGET}
+            src/speaker_diagnostic_main.cpp
+            src/audio_output.cpp)
+    else()
+        add_executable(${CPCEXPLORER_TARGET}
+            src/main.cpp
+            src/launcher.cpp
+            src/display/st7789.c
+            src/display/st7789_parallel.pio)
+    endif()
     if(CPCEXPLORER_STAGE4H1_AY_AUDIO)
         target_sources(${CPCEXPLORER_TARGET} PRIVATE src/audio_output.cpp)
         target_compile_definitions(${CPCEXPLORER_TARGET} PRIVATE CPCEXPLORER_AY_AUDIO=1)
+    endif()
+    if(CPCEXPLORER_STAGE4H5A_SRAM_LINK_PROBE)
+        target_sources(${CPCEXPLORER_TARGET} PRIVATE src/stage4h5a_sram_link_probe.cpp)
+        target_include_directories(${CPCEXPLORER_TARGET} PRIVATE
+            prototypes/stage4h5_realtime_ay third_party/chips)
+    endif()
+    if(CPCEXPLORER_STAGE4H5B_DUAL_CORE_AY OR CPCEXPLORER_STAGE4H5D_AUDIO_CORRECTION)
+        target_sources(${CPCEXPLORER_TARGET} PRIVATE
+            src/dual_core_ay.cpp
+            prototypes/stage4h5_realtime_ay/realtime_ay_prototype.cpp)
+        target_include_directories(${CPCEXPLORER_TARGET} PRIVATE
+            prototypes/stage4h5_realtime_ay third_party/chips)
+        target_compile_definitions(${CPCEXPLORER_TARGET} PRIVATE
+            CPCEXPLORER_DUAL_CORE_AY=1
+            PICO_CORE1_STACK_SIZE=0)
+    endif()
+    if(CPCEXPLORER_STAGE4J1_QWST OR CPCEXPLORER_STAGE4J2C_KNIGHT OR
+       CPCEXPLORER_STAGE4J3_MIGRATION_FIX OR CPCEXPLORER_STAGE4K3_INCREMENTAL_LIBRARY)
+        target_sources(${CPCEXPLORER_TARGET} PRIVATE src/qwst_pad_pico.cpp)
+        target_compile_definitions(${CPCEXPLORER_TARGET} PRIVATE CPCEXPLORER_QWST_PAD=1)
     endif()
     if(CPCEXPLORER_DEFAULT_ENGINE STREQUAL "FAST")
         if(NOT CPCEXPLORER_ENABLE_FAST_ENGINE)
@@ -226,7 +328,12 @@ if(CPCEXPLORER_BUILD_FIRMWARE)
     elseif(NOT CPCEXPLORER_DEFAULT_ENGINE STREQUAL "REFERENCE")
         message(FATAL_ERROR "CPCEXPLORER_DEFAULT_ENGINE must be REFERENCE or FAST")
     endif()
-    if(CPCEXPLORER_STARTUP STREQUAL "LIBRARY_UPLOAD" OR CPCEXPLORER_STARTUP STREQUAL "LIBRARY_REMOVE" OR CPCEXPLORER_STARTUP STREQUAL "LIBRARY_CONTROLS" OR CPCEXPLORER_STARTUP STREQUAL "LIBRARY_DIAGNOSTIC" OR CPCEXPLORER_STARTUP STREQUAL "LIBRARY_DIAGNOSTIC_SRAM" OR CPCEXPLORER_STARTUP STREQUAL "LIBRARY_FAST")
+    if(CPCEXPLORER_STARTUP STREQUAL "SPEAKER_DIAGNOSTIC")
+        target_compile_definitions(${CPCEXPLORER_TARGET} PRIVATE
+            PICO_STDIO_USB_STDOUT_TIMEOUT_US=1000
+            PICO_STDIO_DEADLOCK_TIMEOUT_MS=1)
+        set(CPCEXPLORER_VERSION "0.4.14-stage4h3speakerdiag")
+    elseif(CPCEXPLORER_STARTUP STREQUAL "LIBRARY_UPLOAD" OR CPCEXPLORER_STARTUP STREQUAL "LIBRARY_REMOVE" OR CPCEXPLORER_STARTUP STREQUAL "LIBRARY_CONTROLS" OR CPCEXPLORER_STARTUP STREQUAL "LIBRARY_DIAGNOSTIC" OR CPCEXPLORER_STARTUP STREQUAL "LIBRARY_DIAGNOSTIC_SRAM" OR CPCEXPLORER_STARTUP STREQUAL "LIBRARY_FAST")
         target_sources(${CPCEXPLORER_TARGET} PRIVATE src/pico_flash_backend.cpp)
         target_compile_definitions(${CPCEXPLORER_TARGET} PRIVATE CPCEXPLORER_LIBRARY=1 CPCEXPLORER_LIBRARY_UPLOAD=1 PICO_FLASH_ASSERT_ON_UNSAFE=0)
         if(CPCEXPLORER_STARTUP STREQUAL "LIBRARY_DIAGNOSTIC" OR CPCEXPLORER_STARTUP STREQUAL "LIBRARY_DIAGNOSTIC_SRAM" OR CPCEXPLORER_STARTUP STREQUAL "LIBRARY_FAST")
@@ -237,7 +344,72 @@ if(CPCEXPLORER_BUILD_FIRMWARE)
                 PICO_STDIO_USB_STDOUT_TIMEOUT_US=1000
                 PICO_STDIO_DEADLOCK_TIMEOUT_MS=1)
             if(CPCEXPLORER_STARTUP STREQUAL "LIBRARY_FAST")
-                if(CPCEXPLORER_STAGE4H1A_AUDIO_DIAG)
+                if(CPCEXPLORER_STAGE4K3_INCREMENTAL_LIBRARY)
+                    target_compile_definitions(${CPCEXPLORER_TARGET} PRIVATE
+                        CPCEXPLORER_ACTIVE_DISPLAY_FIT=1
+                        CPCEXPLORER_CONTINUOUS_AMP=1
+                        CPCEXPLORER_STAGE4H5D_AUDIO_CORRECTION=1
+                        CPCEXPLORER_INTERNAL_LIBRARY=1)
+                    set(CPCEXPLORER_VERSION "0.4.28-stage4k7migrationrecoverfix")
+                elseif(CPCEXPLORER_STAGE4J3_MIGRATION_FIX)
+                    target_compile_definitions(${CPCEXPLORER_TARGET} PRIVATE
+                        CPCEXPLORER_ACTIVE_DISPLAY_FIT=1
+                        CPCEXPLORER_CONTINUOUS_AMP=1
+                        CPCEXPLORER_STAGE4H5D_AUDIO_CORRECTION=1
+                        CPCEXPLORER_INTERNAL_LIBRARY=1)
+                    set(CPCEXPLORER_VERSION "0.4.23-stage4j3migrationfix")
+                elseif(CPCEXPLORER_STAGE4J2C_KNIGHT)
+                    target_compile_definitions(${CPCEXPLORER_TARGET} PRIVATE
+                        CPCEXPLORER_ACTIVE_DISPLAY_FIT=1
+                        CPCEXPLORER_CONTINUOUS_AMP=1
+                        CPCEXPLORER_STAGE4H5D_AUDIO_CORRECTION=1
+                        CPCEXPLORER_INTERNAL_LIBRARY=1)
+                    set(CPCEXPLORER_VERSION "0.4.22-stage4j2cknight")
+                elseif(CPCEXPLORER_STAGE4J1_QWST)
+                    target_compile_definitions(${CPCEXPLORER_TARGET} PRIVATE
+                        CPCEXPLORER_ACTIVE_DISPLAY_FIT=1
+                        CPCEXPLORER_CONTINUOUS_AMP=1
+                        CPCEXPLORER_STAGE4H5D_AUDIO_CORRECTION=1
+                        CPCEXPLORER_INTERNAL_LIBRARY=1)
+                    set(CPCEXPLORER_VERSION "0.4.21-stage4j1qwstexp")
+                elseif(CPCEXPLORER_STAGE4I8_MIGRATION)
+                    target_compile_definitions(${CPCEXPLORER_TARGET} PRIVATE
+                        CPCEXPLORER_ACTIVE_DISPLAY_FIT=1
+                        CPCEXPLORER_CONTINUOUS_AMP=1
+                        CPCEXPLORER_STAGE4H5D_AUDIO_CORRECTION=1
+                        CPCEXPLORER_INTERNAL_LIBRARY=1)
+                    set(CPCEXPLORER_VERSION "0.4.20-stage4i8migrationexp")
+                elseif(CPCEXPLORER_STAGE4I7_CONTROLS)
+                    target_compile_definitions(${CPCEXPLORER_TARGET} PRIVATE
+                        CPCEXPLORER_ACTIVE_DISPLAY_FIT=1
+                        CPCEXPLORER_CONTINUOUS_AMP=1
+                        CPCEXPLORER_STAGE4H5D_AUDIO_CORRECTION=1
+                        CPCEXPLORER_INTERNAL_LIBRARY=1)
+                    set(CPCEXPLORER_VERSION "0.4.19-stage4i7controlsexp")
+                elseif(CPCEXPLORER_STAGE4I6_INTERNAL_LIBRARY)
+                    target_compile_definitions(${CPCEXPLORER_TARGET} PRIVATE
+                        CPCEXPLORER_ACTIVE_DISPLAY_FIT=1
+                        CPCEXPLORER_CONTINUOUS_AMP=1
+                        CPCEXPLORER_STAGE4H5D_AUDIO_CORRECTION=1
+                        CPCEXPLORER_INTERNAL_LIBRARY=1)
+                    set(CPCEXPLORER_VERSION "0.4.18-stage4i6internalexp")
+                elseif(CPCEXPLORER_STAGE4H5D_AUDIO_CORRECTION)
+                    target_compile_definitions(${CPCEXPLORER_TARGET} PRIVATE
+                        CPCEXPLORER_ACTIVE_DISPLAY_FIT=1
+                        CPCEXPLORER_CONTINUOUS_AMP=1
+                        CPCEXPLORER_STAGE4H5D_AUDIO_CORRECTION=1)
+                    set(CPCEXPLORER_VERSION "0.4.17-stage4h5dayaudioexp")
+                elseif(CPCEXPLORER_STAGE4H5B_DUAL_CORE_AY)
+                    target_compile_definitions(${CPCEXPLORER_TARGET} PRIVATE
+                        CPCEXPLORER_ACTIVE_DISPLAY_FIT=1
+                        CPCEXPLORER_CONTINUOUS_AMP=1)
+                    set(CPCEXPLORER_VERSION "0.4.16-stage4h5bayaudioexp")
+                elseif(CPCEXPLORER_STAGE4H4_CONTINUOUS_AMP)
+                    target_compile_definitions(${CPCEXPLORER_TARGET} PRIVATE
+                        CPCEXPLORER_ACTIVE_DISPLAY_FIT=1
+                        CPCEXPLORER_CONTINUOUS_AMP=1)
+                    set(CPCEXPLORER_VERSION "0.4.15-stage4h4ayaudio")
+                elseif(CPCEXPLORER_STAGE4H1A_AUDIO_DIAG)
                     target_compile_definitions(${CPCEXPLORER_TARGET} PRIVATE CPCEXPLORER_ACTIVE_DISPLAY_FIT=1)
                     set(CPCEXPLORER_VERSION "0.4.13-stage4h1aaydiag")
                 elseif(CPCEXPLORER_STAGE4H1_AY_AUDIO)
@@ -293,25 +465,59 @@ if(CPCEXPLORER_BUILD_FIRMWARE)
     else()
         set(CPCEXPLORER_VERSION "0.2.0-stage2a")
     endif()
-    pico_generate_pio_header(${CPCEXPLORER_TARGET} "${CMAKE_CURRENT_LIST_DIR}/src/display/st7789_parallel.pio")
+    if(NOT CPCEXPLORER_STARTUP STREQUAL "SPEAKER_DIAGNOSTIC")
+        pico_generate_pio_header(${CPCEXPLORER_TARGET} "${CMAKE_CURRENT_LIST_DIR}/src/display/st7789_parallel.pio")
+    endif()
     target_include_directories(${CPCEXPLORER_TARGET} PRIVATE src src/display)
-    target_link_libraries(${CPCEXPLORER_TARGET} PRIVATE
-        cpc_core cpc_gameplay_input cpc_performance_metrics cpc_display_fit pico_stdlib hardware_clocks hardware_dma hardware_gpio hardware_pio hardware_pwm)
+    if(CPCEXPLORER_STARTUP STREQUAL "SPEAKER_DIAGNOSTIC")
+        target_link_libraries(${CPCEXPLORER_TARGET} PRIVATE
+            cpc_speaker_tone_sequence pico_stdlib hardware_clocks hardware_dma hardware_gpio hardware_pwm)
+    else()
+        target_link_libraries(${CPCEXPLORER_TARGET} PRIVATE
+            cpc_core cpc_gameplay_input cpc_performance_metrics cpc_display_fit pico_stdlib hardware_clocks hardware_dma hardware_gpio hardware_pio hardware_pwm)
+        if(CPCEXPLORER_STAGE4H5B_DUAL_CORE_AY OR CPCEXPLORER_STAGE4H5D_AUDIO_CORRECTION)
+            target_link_libraries(${CPCEXPLORER_TARGET} PRIVATE pico_multicore)
+        endif()
+        if(CPCEXPLORER_STAGE4J1_QWST OR CPCEXPLORER_STAGE4J2C_KNIGHT OR
+           CPCEXPLORER_STAGE4J3_MIGRATION_FIX OR CPCEXPLORER_STAGE4K3_INCREMENTAL_LIBRARY)
+            target_link_libraries(${CPCEXPLORER_TARGET} PRIVATE cpc_qwst_pad hardware_i2c)
+        endif()
+    endif()
     if(CPCEXPLORER_STARTUP STREQUAL "LIBRARY_UPLOAD" OR CPCEXPLORER_STARTUP STREQUAL "LIBRARY_REMOVE" OR CPCEXPLORER_STARTUP STREQUAL "LIBRARY_CONTROLS" OR CPCEXPLORER_STARTUP STREQUAL "LIBRARY_DIAGNOSTIC" OR CPCEXPLORER_STARTUP STREQUAL "LIBRARY_DIAGNOSTIC_SRAM" OR CPCEXPLORER_STARTUP STREQUAL "LIBRARY_FAST")
         target_link_libraries(${CPCEXPLORER_TARGET} PRIVATE pico_flash hardware_flash)
     endif()
     pico_enable_stdio_usb(${CPCEXPLORER_TARGET} 1)
     pico_enable_stdio_uart(${CPCEXPLORER_TARGET} 0)
-    pico_set_program_name(${CPCEXPLORER_TARGET} "CPC Explorer")
+    if(CPCEXPLORER_STARTUP STREQUAL "SPEAKER_DIAGNOSTIC")
+        pico_set_program_name(${CPCEXPLORER_TARGET} "CPC Explorer Speaker Diagnostic")
+    else()
+        pico_set_program_name(${CPCEXPLORER_TARGET} "CPC Explorer")
+    endif()
     pico_set_program_version(${CPCEXPLORER_TARGET} "${CPCEXPLORER_VERSION}")
-    pico_add_extra_outputs(${CPCEXPLORER_TARGET})
-    add_custom_command(TARGET ${CPCEXPLORER_TARGET} POST_BUILD
-        COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_LIST_DIR}/tools/check_flash_layout.py"
-                "$<TARGET_FILE_DIR:${CPCEXPLORER_TARGET}>/${CPCEXPLORER_TARGET}.bin"
-        VERBATIM)
+    if(CPCEXPLORER_STAGE4H5A_SRAM_LINK_PROBE)
+        target_link_options(${CPCEXPLORER_TARGET} PRIVATE
+            "-Wl,-Map=$<TARGET_FILE:${CPCEXPLORER_TARGET}>.map"
+            "-Wl,--undefined=stage4h5a_control")
+        add_custom_command(TARGET ${CPCEXPLORER_TARGET} POST_BUILD
+            COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_LIST_DIR}/tools/check_stage4h5a_sram_probe.py"
+                    "$<TARGET_FILE:${CPCEXPLORER_TARGET}>.map"
+            VERBATIM)
+    else()
+        pico_add_extra_outputs(${CPCEXPLORER_TARGET})
+        add_custom_command(TARGET ${CPCEXPLORER_TARGET} POST_BUILD
+            COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_LIST_DIR}/tools/check_flash_layout.py"
+                    "$<TARGET_FILE_DIR:${CPCEXPLORER_TARGET}>/${CPCEXPLORER_TARGET}.bin"
+            VERBATIM)
+    endif()
     if(CPCEXPLORER_STAGE4F6_SRAM_STEP)
         add_custom_command(TARGET ${CPCEXPLORER_TARGET} POST_BUILD
             COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_LIST_DIR}/tools/check_stage4f6_sram.py"
+                    "$<TARGET_FILE:${CPCEXPLORER_TARGET}>.map"
+            VERBATIM)
+    endif()
+    if(CPCEXPLORER_STAGE4H5B_DUAL_CORE_AY OR CPCEXPLORER_STAGE4H5D_AUDIO_CORRECTION)
+        add_custom_command(TARGET ${CPCEXPLORER_TARGET} POST_BUILD
+            COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_LIST_DIR}/tools/check_stage4h5b_link.py"
                     "$<TARGET_FILE:${CPCEXPLORER_TARGET}>.map"
             VERBATIM)
     endif()
@@ -330,12 +536,27 @@ else()
     target_link_libraries(cpc_launcher_test PRIVATE cpc_game_library cpc_gameplay_input)
     add_executable(cpc_game_library_test tests/game_library_test.cpp src/launcher.cpp)
     target_link_libraries(cpc_game_library_test PRIVATE cpc_core cpc_gameplay_input)
+    add_executable(cpc_packed_library_test tests/packed_library_test.cpp src/launcher.cpp)
+    target_link_libraries(cpc_packed_library_test PRIVATE cpc_core cpc_gameplay_input)
+    target_compile_definitions(cpc_packed_library_test PRIVATE
+        CPCEXPLORER_PACKED_TEST_SNA="${CMAKE_CURRENT_LIST_DIR}/snapshots/knight-tyme.sna")
     add_executable(cpc_library_installer_test tests/library_installer_test.cpp)
     target_link_libraries(cpc_library_installer_test PRIVATE cpc_game_library)
+    add_executable(cpc_packed_migration_test tests/packed_migration_test.cpp src/launcher.cpp)
+    target_link_libraries(cpc_packed_migration_test PRIVATE cpc_game_library cpc_gameplay_input)
+    target_compile_definitions(cpc_packed_migration_test PRIVATE
+        CPCEXPLORER_STAGE4I8_PACK="${CMAKE_CURRENT_LIST_DIR}/artifacts/stage4i7-internal-library/library.cpxpack")
     add_executable(cpc_snapshot_builder tools/snapshot_builder.cpp)
     target_link_libraries(cpc_snapshot_builder PRIVATE cpc_core)
     add_executable(cpc_gameplay_input_test tests/gameplay_input_test.cpp)
     target_link_libraries(cpc_gameplay_input_test PRIVATE cpc_gameplay_input)
+    add_executable(cpc_qwst_pad_test tests/qwst_pad_test.cpp)
+    target_link_libraries(cpc_qwst_pad_test PRIVATE cpc_qwst_pad)
+    add_executable(cpc_stage4i7_controls_test tests/stage4i7_controls_test.cpp)
+    target_link_libraries(cpc_stage4i7_controls_test PRIVATE cpc_core)
+    target_compile_definitions(cpc_stage4i7_controls_test PRIVATE
+        CPCEXPLORER_STAGE4I7_COLUMNS_SNA="${CMAKE_CURRENT_LIST_DIR}/artifacts/stage4i4-internal-library/columns/snapshot-probe2/probe-final.sna"
+        CPCEXPLORER_STAGE4I7_THRUST_SNA="${CMAKE_CURRENT_LIST_DIR}/artifacts/stage4i6-gameplay/thrust2/probe-final.sna")
     add_executable(cpc_performance_metrics_test tests/performance_metrics_test.cpp)
     target_link_libraries(cpc_performance_metrics_test PRIVATE cpc_performance_metrics)
     add_executable(cpc_display_fit_test tests/display_fit_test.cpp)
@@ -344,8 +565,22 @@ else()
     target_link_libraries(cpc_ay_audio_test PRIVATE cpc_core)
     add_executable(cpc_audio_buffer_test tests/audio_buffer_test.cpp)
     target_include_directories(cpc_audio_buffer_test PRIVATE src)
+    add_executable(cpc_audio_output_policy_test tests/audio_output_policy_test.cpp)
+    target_include_directories(cpc_audio_output_policy_test PRIVATE src)
     add_executable(cpc_three_tone_audio_test tests/three_tone_audio_test.cpp)
     target_link_libraries(cpc_three_tone_audio_test PRIVATE cpc_core)
+    add_executable(cpc_speaker_tone_sequence_test tests/speaker_tone_sequence_test.cpp)
+    target_link_libraries(cpc_speaker_tone_sequence_test PRIVATE cpc_speaker_tone_sequence)
+    add_executable(cpc_realtime_ay_prototype_test
+        tests/realtime_ay_prototype_test.cpp
+        prototypes/stage4h5_realtime_ay/realtime_ay_prototype.cpp)
+    target_include_directories(cpc_realtime_ay_prototype_test PRIVATE
+        prototypes/stage4h5_realtime_ay third_party/chips)
+    add_executable(cpc_realtime_ay_trace_test
+        tests/realtime_ay_trace_test.cpp
+        prototypes/stage4h5_realtime_ay/realtime_ay_prototype.cpp)
+    target_include_directories(cpc_realtime_ay_trace_test PRIVATE
+        prototypes/stage4h5_realtime_ay third_party/chips)
     if(CPCEXPLORER_ENABLE_FAST_ENGINE)
         add_executable(cpc_dizzy_audio_test tests/dizzy_audio_test.cpp)
         target_link_libraries(cpc_dizzy_audio_test PRIVATE cpc_core)
@@ -371,9 +606,11 @@ else()
         target_compile_options(cpc_host_knight_tyme_test PRIVATE /W4 /permissive-)
         target_compile_options(cpc_launcher_test PRIVATE /W4 /permissive-)
         target_compile_options(cpc_game_library_test PRIVATE /W4 /permissive-)
+        target_compile_options(cpc_packed_library_test PRIVATE /W4 /permissive-)
         target_compile_options(cpc_library_installer_test PRIVATE /W4 /permissive-)
         target_compile_options(cpc_snapshot_builder PRIVATE /W4 /permissive-)
         target_compile_options(cpc_gameplay_input_test PRIVATE /W4 /permissive-)
+        target_compile_options(cpc_qwst_pad_test PRIVATE /W4 /permissive-)
         target_compile_options(cpc_performance_metrics_test PRIVATE /W4 /permissive-)
         target_compile_options(cpc_display_fit_test PRIVATE /W4 /permissive-)
     else()
@@ -382,9 +619,11 @@ else()
         target_compile_options(cpc_host_knight_tyme_test PRIVATE -Wall -Wextra -Wpedantic)
         target_compile_options(cpc_launcher_test PRIVATE -Wall -Wextra -Wpedantic)
         target_compile_options(cpc_game_library_test PRIVATE -Wall -Wextra -Wpedantic)
+        target_compile_options(cpc_packed_library_test PRIVATE -Wall -Wextra -Wpedantic)
         target_compile_options(cpc_library_installer_test PRIVATE -Wall -Wextra -Wpedantic)
         target_compile_options(cpc_snapshot_builder PRIVATE -Wall -Wextra -Wpedantic)
         target_compile_options(cpc_gameplay_input_test PRIVATE -Wall -Wextra -Wpedantic)
+        target_compile_options(cpc_qwst_pad_test PRIVATE -Wall -Wextra -Wpedantic)
         target_compile_options(cpc_performance_metrics_test PRIVATE -Wall -Wextra -Wpedantic)
         target_compile_options(cpc_display_fit_test PRIVATE -Wall -Wextra -Wpedantic)
         if(CPCEXPLORER_ENABLE_FAST_ENGINE)
@@ -397,20 +636,34 @@ else()
              "${CPCEXPLORER_KNIGHT_SOURCE}")
     add_test(NAME cpc_launcher_logic COMMAND cpc_launcher_test)
     add_test(NAME cpc_game_library COMMAND cpc_game_library_test)
+    add_test(NAME cpc_packed_library COMMAND cpc_packed_library_test)
     add_test(NAME cpc_library_installer COMMAND cpc_library_installer_test)
+    add_test(NAME cpc_packed_migration COMMAND cpc_packed_migration_test)
+    add_test(NAME cpc_flash_backup_validator COMMAND "${Python3_EXECUTABLE}"
+             "${CMAKE_CURRENT_LIST_DIR}/tools/validate_flash_backup.py" --self-test)
     add_test(NAME cpc_game_importer COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_LIST_DIR}/tests/importer_test.py")
+    add_test(NAME cpc_migration_transport COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_LIST_DIR}/tests/migration_transport_test.py")
     add_test(NAME cpc_uf2_policy COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_LIST_DIR}/tests/uf2_validator_test.py")
     add_test(NAME cpc_manic_miner_native COMMAND cpc_snapshot_builder manic-miner
              "${CPCEXPLORER_MANIC_SOURCE}"
              "${CMAKE_CURRENT_BINARY_DIR}/manic-miner-native.sna"
              "${CMAKE_CURRENT_BINARY_DIR}/manic-miner-evidence")
     add_test(NAME cpc_gameplay_input COMMAND cpc_gameplay_input_test)
+    add_test(NAME cpc_qwst_pad COMMAND cpc_qwst_pad_test)
+    add_test(NAME cpc_stage4i7_controls COMMAND cpc_stage4i7_controls_test)
     add_test(NAME cpc_performance_metrics COMMAND cpc_performance_metrics_test)
     add_test(NAME cpc_display_fit COMMAND cpc_display_fit_test)
     add_test(NAME cpc_ay_audio COMMAND cpc_ay_audio_test "${CMAKE_CURRENT_BINARY_DIR}/ay-audio-evidence.wav")
     add_test(NAME cpc_audio_buffer COMMAND cpc_audio_buffer_test)
+    add_test(NAME cpc_audio_output_policy COMMAND cpc_audio_output_policy_test)
     add_test(NAME cpc_three_tone_audio COMMAND cpc_three_tone_audio_test
              "${CMAKE_CURRENT_BINARY_DIR}/stage4h1a-three-tones.wav")
+    add_test(NAME cpc_speaker_tone_sequence COMMAND cpc_speaker_tone_sequence_test)
+    add_test(NAME cpc_realtime_ay_prototype COMMAND cpc_realtime_ay_prototype_test)
+    add_test(NAME cpc_realtime_ay_traces COMMAND cpc_realtime_ay_trace_test
+             "${CMAKE_CURRENT_LIST_DIR}/build-host-stage4h4-continuous-audio/manic-noinput-h4.csv"
+             "${CMAKE_CURRENT_LIST_DIR}/build-host-stage4h4-continuous-audio/knight-h4.csv"
+             "${CMAKE_CURRENT_LIST_DIR}/artifacts/stage4h1a-audio/dizzy-60s-psg-trace.csv")
     if(CPCEXPLORER_ENABLE_FAST_ENGINE)
         add_test(NAME cpc_dizzy_audio COMMAND cpc_dizzy_audio_test
                  "${CMAKE_CURRENT_BINARY_DIR}/stage4h1a-dizzy-gameplay.wav"

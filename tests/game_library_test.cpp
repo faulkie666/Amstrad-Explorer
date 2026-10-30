@@ -160,6 +160,21 @@ int main() {
     if (!expect(menu.selected() == 3, "navigate longer list") ||
         !expect(menu.first_visible(3) == 1, "scroll visible window")) return 4;
 
+    flash[offset1 + 300] ^= 0x40;
+    library::GameInfo fast_metadata{};
+    library::GameInfo verified_payload{};
+    if (!expect(view.game(1, fast_metadata),
+                "mounted catalogue metadata remains cheap to enumerate") ||
+        !expect(!view.verified_game(1, verified_payload),
+                "launch-time verification rejects payload corruption") ||
+        !expect(menu.selected_entry().type == launcher::EntryType::Basic,
+                "launcher fails closed when selected payload becomes corrupt")) return 4;
+    flash[offset1 + 300] ^= 0x40;
+    if (!expect(view.verified_game(1, verified_payload),
+                "launch-time verification accepts restored payload") ||
+        !expect(std::strcmp(menu.selected_entry().snapshot_id, "game_two") == 0,
+                "restored game remains launchable")) return 4;
+
     cpcexplorer::reset();
     if (!expect(cpcexplorer::load_sna(game.data, game.data_length),
                 "load library snapshot into emulator")) return 5;

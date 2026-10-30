@@ -38,7 +38,7 @@ bool decode_frame(const std::uint8_t* bytes, std::size_t size, Frame& result) {
     if (length > kMaximumChunkBytes || size != kFrameHeaderBytes + length ||
         library::crc32(bytes + kFrameHeaderBytes, length) != u32(bytes + 12)) return false;
     const auto command = static_cast<Command>(bytes[5]);
-    if (command < Command::Hello || command > Command::Remove) return false;
+    if (command < Command::Hello || command > Command::MigrationRead) return false;
     result = {command, u32(bytes + 8), bytes + kFrameHeaderBytes, length};
     return true;
 }

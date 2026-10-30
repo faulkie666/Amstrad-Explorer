@@ -21,13 +21,22 @@ public:
 
 class Installer final : public upload::Sink {
 public:
+    using ReservedIdPredicate = bool (*)(const char* game_id);
+
     explicit Installer(Flash& flash) : flash_(flash) {}
+    void set_reserved_id_predicate(ReservedIdPredicate predicate) {
+        reserved_id_predicate_ = predicate;
+    }
     bool begin(std::uint32_t package_length) override;
     bool write(std::uint32_t offset, const std::uint8_t* data, std::size_t size) override;
     bool commit() override;
     void abort() override;
     bool remove(const char* game_id);
     bool recover_pending_removal();
+    bool reserve_for_packed_library(std::uint32_t high_water);
+    bool packed_region_reserved(std::uint32_t high_water) const;
+    std::uint8_t* scratch_buffer() { return catalog_; }
+    static constexpr std::size_t scratch_bytes() { return 16 * 1024; }
     const char* error() const { return error_; }
     std::uint32_t stored_crc32() const { return stored_crc32_; }
     std::uint32_t data_offset() const { return data_offset_; }
@@ -42,6 +51,7 @@ private:
     void fail(const char* message);
 
     Flash& flash_;
+    ReservedIdPredicate reserved_id_predicate_ = nullptr;
     const char* error_ = "none";
     bool active_ = false;
     bool prepared_ = false;

@@ -68,7 +68,7 @@ bool valid_descriptor(const std::uint8_t* descriptor) {
     if (masked_crc(descriptor, library::kDescriptorBytes, 72) != u32(descriptor + 72) ||
         !terminated_printable(descriptor, 16) || !terminated_printable(descriptor + 16, 40) ||
         descriptor[56] != 1 || descriptor[57] != 64 || descriptor[58] == 0 ||
-        descriptor[59] > 2) return false;
+        descriptor[59] > library::kMaximumControlProfile) return false;
     const std::uint32_t offset = u32(descriptor + 60), length = u32(descriptor + 64);
     return (offset & 0xfffU) == 0 && offset >= library::kDataStart &&
            length == library::kSnapshotBytes && length <= library::kLibraryBytes - offset;
@@ -135,10 +135,14 @@ bool Installer::prepare_payload() {
     }
     auto* d = package_header_ + 16;
     if (masked_crc(d, 80, 72) != u32(d + 72) || d[56] != 1 || d[57] != 64 ||
-        d[58] == 0 || d[59] > 2 || u32(d + 60) != 96 ||
+        d[58] == 0 || d[59] > library::kMaximumControlProfile || u32(d + 60) != 96 ||
         u32(d + 64) != library::kSnapshotBytes ||
         !terminated_printable(d, 16) || !terminated_printable(d + 16, 40)) {
         fail("package_descriptor"); return false;
+    }
+    if (reserved_id_predicate_ != nullptr &&
+        reserved_id_predicate_(reinterpret_cast<const char*>(d))) {
+        fail("reserved_game_id"); return false;
     }
     library::View view;
     const auto* mapped = flash_.mapped_library();
@@ -180,6 +184,71 @@ bool Installer::prepare_payload() {
     }
     if (!flash_.erase(flash_offset, kAllocationBytes)) { fail("payload_erase"); return false; }
     prepared_ = true;
+    return true;
+}
+
+bool Installer::reserve_for_packed_library(std::uint32_t high_water) {
+    error_ = "none";
+    if (!flash_.ready() || flash_.capacity() != library::kFlashBytes) {
+        fail("flash_identity_or_capacity"); return false;
+    }
+    if ((high_water & 0xfffU) != 0 || high_water < library::kDataStart ||
+        high_water > library::kLibraryBytes) {
+        fail("packed_high_water"); return false;
+    }
+    const auto* mapped = flash_.mapped_library();
+    library::View view;
+    if (!view.mount(mapped, library::kLibraryBytes) || view.declared_count() != 2 ||
+        view.valid_count() != 2 || view.generation() > UINT32_MAX - 2) {
+        fail("packed_catalog_state"); return false;
+    }
+    std::size_t manic = 0, dizzy = 0;
+    for (std::size_t i = 0; i < view.valid_count(); ++i) {
+        library::GameInfo game{};
+        if (!view.game(i, game) || game.game_id == nullptr) {
+            fail("packed_catalog_descriptor"); return false;
+        }
+        manic += std::strcmp(game.game_id, "manic_miner") == 0;
+        dizzy += std::strcmp(game.game_id, "dizzy") == 0;
+    }
+    if (manic != 1 || dizzy != 1) { fail("packed_catalog_ids"); return false; }
+    std::uint32_t slot_high[2]{};
+    for (std::uint32_t slot = 0; slot < 2; ++slot) {
+        if (!scan_catalog(mapped + slot * library::kCatalogSlotBytes, slot_high[slot])) {
+            fail("packed_catalog_copy"); return false;
+        }
+        if (slot_high[slot] > high_water) { fail("packed_region_allocated"); return false; }
+    }
+    const std::uint32_t active_slot = view.catalog_offset();
+    const std::uint32_t inactive_slot = active_slot == 0 ? library::kCatalogSlotBytes : 0;
+    std::memcpy(catalog_, mapped + view.catalog_offset(), sizeof(catalog_));
+    const std::uint16_t count = static_cast<std::uint16_t>(view.declared_count());
+    const std::uint32_t first_generation = view.generation() + 1;
+    make_header(catalog_, first_generation, count, high_water, 0, nullptr);
+    if (!write_catalog(inactive_slot, "packed_catalog1_erase", "packed_catalog1_program",
+                       "packed_catalog1_verify")) return false;
+    make_header(catalog_, first_generation + 1, count, high_water, 0, nullptr);
+    if (!write_catalog(active_slot, "packed_catalog2_erase", "packed_catalog2_program",
+                       "packed_catalog2_verify")) return false;
+    for (std::uint32_t slot = 0; slot < 2; ++slot) {
+        std::uint32_t verified_high = 0;
+        if (!scan_catalog(mapped + slot * library::kCatalogSlotBytes, verified_high) ||
+            verified_high != high_water) {
+            fail("packed_catalog_high_water_verify"); return false;
+        }
+    }
+    return true;
+}
+
+bool Installer::packed_region_reserved(std::uint32_t high_water) const {
+    if (!flash_.ready() || flash_.capacity() != library::kFlashBytes ||
+        (high_water & 0xfffU) != 0) return false;
+    const auto* mapped = flash_.mapped_library();
+    for (std::uint32_t slot = 0; slot < 2; ++slot) {
+        std::uint32_t slot_high = 0;
+        if (!scan_catalog(mapped + slot * library::kCatalogSlotBytes, slot_high) ||
+            slot_high < high_water) return false;
+    }
     return true;
 }
 

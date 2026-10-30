@@ -24,6 +24,9 @@ pico_board_cmake_set(PICO_PLATFORM, rp2350)
 #define PIMORONI_EXPLORER_LCD_DB0_PIN       32
 
 /* On-board switches connect to ground when pressed: active-low, pull-up. */
+#define PIMORONI_EXPLORER_SWITCH_C_PIN       14
+#define PIMORONI_EXPLORER_SWITCH_B_PIN       15
+#define PIMORONI_EXPLORER_SWITCH_A_PIN       16
 #define PIMORONI_EXPLORER_SWITCH_X_PIN       17
 #define PIMORONI_EXPLORER_SWITCH_Y_PIN       18
 #define PIMORONI_EXPLORER_SWITCH_Z_PIN       19

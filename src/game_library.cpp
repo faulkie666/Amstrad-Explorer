@@ -61,12 +61,13 @@ bool valid_catalog_header(const std::uint8_t* catalog, std::size_t available) {
 bool parse_descriptor(const std::uint8_t* descriptor, const std::uint8_t* storage,
                       std::size_t storage_size, std::uint32_t minimum_offset,
                       std::uint32_t maximum_offset, bool require_sector_alignment,
-                      GameInfo& result) {
+                      bool verify_payload, GameInfo& result) {
     if (crc32_masked(descriptor, kDescriptorBytes, 72, 4) != u32(descriptor + 72) ||
         !terminated_printable(descriptor, 16) ||
         !terminated_printable(descriptor + 16, 40) ||
         descriptor[56] != static_cast<std::uint8_t>(MachineType::Cpc464) ||
-        descriptor[57] != 64 || descriptor[58] == 0 || descriptor[59] > 2) return false;
+        descriptor[57] != 64 || descriptor[58] == 0 ||
+        descriptor[59] > kMaximumControlProfile) return false;
     const std::uint32_t offset = u32(descriptor + 60);
     const std::uint32_t length = u32(descriptor + 64);
     if (offset < minimum_offset || offset > maximum_offset ||
@@ -74,7 +75,7 @@ bool parse_descriptor(const std::uint8_t* descriptor, const std::uint8_t* storag
         length != kSnapshotBytes || length > maximum_offset - offset ||
         offset > storage_size || length > storage_size - offset) return false;
     const auto* payload = storage + offset;
-    if (crc32(payload, length) != u32(descriptor + 68) ||
+    if ((verify_payload && crc32(payload, length) != u32(descriptor + 68)) ||
         !is_supported_snapshot(payload, length, descriptor[58])) return false;
     result.game_id = reinterpret_cast<const char*>(descriptor);
     result.title = reinterpret_cast<const char*>(descriptor + 16);
@@ -151,23 +152,40 @@ bool View::mount(const std::uint8_t* bytes, std::size_t size) {
     if (catalog_ == nullptr) return false;
     declared_count_ = u16(catalog_ + 16);
     for (std::uint16_t i = 0; i < declared_count_; ++i) {
-        GameInfo ignored{};
-        if (descriptor(i, ignored)) valid_indices_[valid_count_++] = i;
+        GameInfo candidate{};
+        if (!descriptor(i, candidate, true)) continue;
+        bool duplicate = false;
+        for (std::uint16_t accepted = 0; accepted < valid_count_; ++accepted) {
+            GameInfo previous{};
+            if (descriptor(valid_indices_[accepted], previous, false) &&
+                std::strcmp(previous.game_id, candidate.game_id) == 0) {
+                duplicate = true;
+                break;
+            }
+        }
+        if (!duplicate) valid_indices_[valid_count_++] = i;
     }
     return true;
 }
 
-bool View::descriptor(std::size_t descriptor_index, GameInfo& result) const {
+bool View::descriptor(std::size_t descriptor_index, GameInfo& result,
+                      bool verify_payload) const {
     if (catalog_ == nullptr || descriptor_index >= declared_count_) return false;
     const std::size_t descriptor_offset = kCatalogHeaderBytes + descriptor_index * kDescriptorBytes;
     if (descriptor_offset + kDescriptorBytes > kCatalogSlotBytes) return false;
     return parse_descriptor(catalog_ + descriptor_offset, library_, library_size_,
-                            u32(catalog_ + 20), u32(catalog_ + 24), true, result);
+                            u32(catalog_ + 20), u32(catalog_ + 24), true,
+                            verify_payload, result);
 }
 
 bool View::game(std::size_t valid_index, GameInfo& result) const {
     if (valid_index >= valid_count_) return false;
-    return descriptor(valid_indices_[valid_index], result);
+    return descriptor(valid_indices_[valid_index], result, false);
+}
+
+bool View::verified_game(std::size_t valid_index, GameInfo& result) const {
+    if (valid_index >= valid_count_) return false;
+    return descriptor(valid_indices_[valid_index], result, true);
 }
 
 std::uint32_t View::catalog_offset() const {
@@ -184,7 +202,7 @@ bool parse_package(const std::uint8_t* bytes, std::size_t size, GameInfo& result
         u32(bytes + 12) != size) return false;
     return parse_descriptor(bytes + package_header, bytes, size,
                             static_cast<std::uint32_t>(payload_offset),
-                            static_cast<std::uint32_t>(size), false, result);
+                            static_cast<std::uint32_t>(size), false, true, result);
 }
 
 }  // namespace cpcexplorer::library

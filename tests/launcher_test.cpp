@@ -1,4 +1,5 @@
 #include "launcher.h"
+#include "menu_presentation.h"
 
 #include <cstdio>
 #include <cstring>
@@ -19,6 +20,26 @@ bool expect(bool condition, const char* message) {
 }  // namespace
 
 int main() {
+    if (!expect(std::strcmp(cpcexplorer::menu_presentation::Instruction, "Pick a game") == 0,
+                "menu instruction text") ||
+        !expect(std::strcmp(cpcexplorer::menu_presentation::Signature, "Faulkie") == 0,
+                "menu signature text") ||
+        !expect(cpcexplorer::menu_presentation::SignatureScale == 1,
+                "menu signature uses smallest font scale") ||
+        !expect(cpcexplorer::menu_presentation::SignatureX >= 0 &&
+                    cpcexplorer::menu_presentation::SignatureX +
+                        cpcexplorer::menu_presentation::SignatureWidth <= 316 &&
+                    cpcexplorer::menu_presentation::SignatureY > 231 &&
+                    cpcexplorer::menu_presentation::SignatureY +
+                        cpcexplorer::menu_presentation::SignatureHeight <= 239,
+                "menu signature is padded, on-screen, and below controls")) return 9;
+
+    if (!expect(cpcexplorer::launcher::has_builtin_snapshot_id("knight_tyme"),
+                "canonical Knight Tyme snapshot ID is built in") ||
+        !expect(!cpcexplorer::launcher::has_builtin_snapshot_id("Knight Tyme"),
+                "display name is not accepted as a built-in identity") ||
+        !expect(!cpcexplorer::launcher::has_builtin_snapshot_id("manic_miner"),
+                "legacy flash games are not mistaken for built-ins")) return 1;
     if (!expect(cpcexplorer::launcher::entry_count() == 2, "registry count") ||
         !expect(std::strcmp(cpcexplorer::launcher::entry(0).display_name, "Locomotive BASIC") == 0,
                 "BASIC must be first") ||

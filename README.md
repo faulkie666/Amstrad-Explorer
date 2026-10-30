@@ -7,8 +7,8 @@
 [![RP2350](https://img.shields.io/badge/target-RP2350-C51A4A?style=for-the-badge&logo=raspberrypi&logoColor=white)](https://www.raspberrypi.com/products/rp2350/)
 [![CPC 464](https://img.shields.io/badge/system-Amstrad_CPC_464-1E90FF?style=for-the-badge)](#emulated-hardware)
 [![C++20](https://img.shields.io/badge/C%2B%2B-20-00599C?style=for-the-badge&logo=cplusplus&logoColor=white)](CMakeLists.txt)
-[![Firmware](https://img.shields.io/badge/firmware-0.4.11-8A2BE2?style=for-the-badge)](docs/STAGE4G21_DIZZY_CANDIDATE.md)
-[![Tests](https://img.shields.io/badge/host_tests-16%2F16_passing-2EA44F?style=for-the-badge)](#verification)
+[![Firmware](https://img.shields.io/badge/firmware-0.4.28-8A2BE2?style=for-the-badge)](docs/STAGE4K7_MASS_LIBRARY_INSTALLATION.md)
+[![Tests](https://img.shields.io/badge/host_tests-26%2F26_passing-2EA44F?style=for-the-badge)](#verification)
 [![License](https://img.shields.io/badge/license-GPLv3-F4C430?style=for-the-badge&logo=gnu&logoColor=black)](LICENSE)
 
 **Real CPC ROM execution · fast Z80 engine · native 320×240 display · persistent USB game library**
@@ -46,43 +46,47 @@ comparison while the fast engine provides the practical hardware path.
 - Protected firmware, catalog, payload and RP2350-E10 flash regions.
 - Windows packaging, inspection, detection, upload and removal tools.
 - USB performance telemetry for physical CPC-speed measurements.
-- AY-3-8912 PCM generation with host WAV and register-trace diagnostics.
+- Continuous dual-core AY-3-8912 audio with PWM/DMA speaker output.
+- Optional Pimoroni Qw/ST Pad support over I2C with data-driven control profiles.
+- Packed CPXPCK2 base libraries plus transactional incremental CPCLIB1 uploads.
 
 ## Current hardware status
 
-The current physical baseline is `0.4.11-stage4g21dizzy`. It retains the
-Stage 4F.6 SRAM Z80 optimisation and adds descriptor-driven gameplay control
-profiles without changing the flash layout or execution clock.
+The current physical baseline is `0.4.28-stage4k7migrationrecoverfix`. It combines
+the SRAM-resident Z80 step routine, active-display fitting, continuous AY audio,
+Qw/ST Pad input, packed-library migration and incremental game installation.
 
 | Area | Status |
 |---|---|
 | Locomotive BASIC | Boots and accepts repeated commands |
 | Knight Tyme | Loads and runs from a verified snapshot |
 | Manic Miner | Loads, uses full-screen active-display fit and accepts gameplay input |
-| Persistent library | Upload, reboot persistence and transactional removal verified |
-| USB protocol | Detect, status, list, upload and remove verified |
+| Persistent library | Packed base library plus transactional incremental uploads |
+| Installed library | 32 visible titles; one preserved numeric-title record is hidden |
+| USB protocol | Detect, status, list, upload, remove, migration and bounded readback verified |
 | Flash identity | Winbond EF-40-18, 16 MiB |
 | E10 protection | Final 64 KiB permanently excluded from game storage |
+| Qw/ST Pad | Ten-button I2C controller with keyboard and joystick profiles |
+| AY audio | Dual-core renderer, DMA output and onboard speaker physically verified |
 | Generic controls | Descriptor-driven profiles with legacy package fallback |
-| Host regression suite | 16/16 passing |
+| Host regression suite | 26/26 passing |
 
-Measured on the Explorer at 150 MHz with Manic Miner:
+The fast engine has been measured on the Explorer at 150 MHz. Results vary with
+the game and peripheral workload:
 
-| Metric | Stage 4F.6 result |
+| Metric | Measured result |
 |---|---:|
-| Effective CPC speed | 74.18% |
-| Z80 execution per 20 ms CPC slice | 23.00 ms |
-| Total loop work | 26.94 ms |
+| Effective CPC speed | approximately 69–82.5% |
+| Stage 4F.6 Manic Miner Z80 time | 23.00 ms per 20 ms CPC slice |
+| Stage 4F.6 Manic Miner total loop | 26.94 ms |
 | Display mode | Active-display fit enabled |
 
 These are physical measurements, not desktop benchmark projections. The
 reference and fast-engine investigation history is documented under [`docs/`](docs/).
 
-AY audio remains host-verified development work and is not part of the current
-physical baseline. Knight Tyme produces a sustained three-channel test passage,
-while Manic Miner produces continuous one-channel music. The validated audio
-path, game traces and deployment hold are documented in
-[Stage 4H.2](docs/STAGE4H2_MUSIC_GAME.md).
+Manic Miner and Knight Tyme have both produced genuine game-driven AY audio on
+physical hardware. Audio synthesis runs independently on core 1, while ordered
+PSG events preserve register-write order from the emulated CPC timeline.
 
 ## Controls
 
@@ -105,8 +109,13 @@ game from leaking into gameplay.
 | Manic Miner | Q / left | W / right | bare Shift / jump |
 | Dizzy, host-verified profile | Z / left | X / right | Space / start and jump |
 
-The Dizzy profile and package are host-verified development work; physical
-acceptance requires a separately built and approved firmware deployment.
+### Qw/ST Pad
+
+The optional PIM752 pad is detected at runtime and leaves the onboard buttons
+available. Profiles can expose CPC cursor keys, QAOP, Space, Enter, joystick 1
+directions and fire, or title-specific keyboard mappings. Presses, simultaneous
+buttons, held states and releases are applied at the CPC keyboard/joystick input
+boundary rather than translated into launcher actions.
 
 ## Architecture
 
@@ -210,12 +219,12 @@ launcher behavior, library parsing, transactional upload/removal, corruption
 and interruption recovery, importer validation, UF2/E10 policy, gameplay input,
 display fitting and performance telemetry.
 
-## Build the Stage 4G.2.1 firmware
+## Build the current RP2350 firmware
 
 Set `PICO_SDK_PATH`, provide the ignored ROM and Knight Tyme snapshot, then run:
 
 ```powershell
-cmake -S . -B build-rp2350-stage4g21-dizzy -G Ninja `
+cmake -S . -B build-rp2350 -G Ninja `
   -DCMAKE_BUILD_TYPE=Release `
   -DCPCEXPLORER_BUILD_FIRMWARE=ON `
   -DPICO_BOARD=pimoroni_explorer `
@@ -224,9 +233,19 @@ cmake -S . -B build-rp2350-stage4g21-dizzy -G Ninja `
   -DCPCEXPLORER_DEFAULT_ENGINE=FAST `
   -DCPCEXPLORER_STAGE4F6_SRAM_STEP=ON `
   -DCPCEXPLORER_STAGE4G21_DIZZY_CONTROLS=ON `
+  -DCPCEXPLORER_STAGE4H1_AY_AUDIO=ON `
+  -DCPCEXPLORER_STAGE4H1A_AUDIO_DIAG=ON `
+  -DCPCEXPLORER_STAGE4H4_CONTINUOUS_AMP=ON `
+  -DCPCEXPLORER_STAGE4H5D_AUDIO_CORRECTION=ON `
+  -DCPCEXPLORER_STAGE4I6_INTERNAL_LIBRARY=ON `
+  -DCPCEXPLORER_STAGE4I7_CONTROLS=ON `
+  -DCPCEXPLORER_STAGE4I8_MIGRATION=ON `
+  -DCPCEXPLORER_STAGE4J1_QWST=ON `
+  -DCPCEXPLORER_STAGE4J3_MIGRATION_FIX=ON `
+  -DCPCEXPLORER_STAGE4K3_INCREMENTAL_LIBRARY=ON `
   -DCPCEXPLORER_FAST_PRESENTATION_DIVISOR=4
 
-cmake --build build-rp2350-stage4g21-dizzy
+cmake --build build-rp2350
 ```
 
 Post-link checks reject firmware outside the 4 MiB reservation and verify that
@@ -301,7 +320,7 @@ catalog erases, catalog programming, final activation, removal recovery,
 generation selection, duplicate IDs, CRC failures, overflow boundaries and
 protected-region overlap.
 
-The current host tree passes all 16 configured tests. Fast-engine integration
+The current host tree passes all 26 configured tests. Fast-engine integration
 has separate deterministic comparisons against the reference engine for BASIC,
 Knight Tyme and Manic Miner.
 
@@ -320,6 +339,11 @@ Knight Tyme and Manic Miner.
 - [AY audio implementation](docs/STAGE4H1_AY_AUDIO.md)
 - [AY audio diagnosis](docs/STAGE4H1A_AY_DIAGNOSIS.md)
 - [Verified game-music capture](docs/STAGE4H2_MUSIC_GAME.md)
+- [Physical AY speaker output](docs/STAGE4H4_INGAME_AY_AUDIO.md)
+- [Qw/ST Pad and audio integration](docs/STAGE4J1_QWST_PAD_AUDIO.md)
+- [Packed-library migration](docs/STAGE4I8_FLASH_MIGRATION_TRANSPORT.md)
+- [Incremental packed-library launcher](docs/STAGE4K3_INCREMENTAL_LIBRARY.md)
+- [Bulk conversion and deployment record](docs/STAGE4K8_CONTINUOUS_CONVERSION_FACTORY.md)
 
 ## Licensing
 

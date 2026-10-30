@@ -17,6 +17,14 @@ enum class Command : std::uint8_t {
     Abort = 5,
     Status = 6,
     Remove = 7,
+    MigrationStatus = 8,
+    MigrationLayout = 9,
+    MigrationBegin = 10,
+    MigrationPage = 11,
+    MigrationVerify = 12,
+    MigrationActivate = 13,
+    MigrationAbort = 14,
+    MigrationRead = 15,
 };
 
 struct Frame {

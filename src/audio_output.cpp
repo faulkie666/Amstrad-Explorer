@@ -12,17 +12,27 @@
 #include "hardware/regs/dreq.h"
 #include "hardware/sync.h"
 
+#include <atomic>
+
 namespace cpcexplorer::audio {
 namespace {
 PcmBufferQueue queue;
 volatile bool running = false;
 int dma_channel = -1;
 unsigned pwm_slice = 0;
-Diagnostics stats{};
+AmplifierPolicy amplifier_policy = AmplifierPolicy::GateOnPlayback;
+struct AtomicDiagnostics {
+    std::atomic<std::uint32_t> submitted{0}, played{0}, underruns{0}, overruns{0};
+    void reset() {
+        submitted.store(0); played.store(0); underruns.store(0); overruns.store(0);
+    }
+};
+AtomicDiagnostics stats{};
 
 void start_dma(const std::uint16_t* buffer) {
     running = true;
-    gpio_put(PIMORONI_EXPLORER_SPEAKER_AMP_ENABLE_PIN, 1);
+    if (gate_amplifier_on_underrun(amplifier_policy))
+        gpio_put(PIMORONI_EXPLORER_SPEAKER_AMP_ENABLE_PIN, 1);
     dma_channel_set_read_addr(dma_channel, buffer, false);
     dma_channel_set_trans_count(dma_channel, PcmBufferQueue::BufferSamples, true);
 }
@@ -32,22 +42,24 @@ void dma_isr() {
     if ((dma_hw->ints1 & mask) == 0) return;
     dma_hw->ints1 = mask;
     queue.complete();
-    ++stats.played;
+    stats.played.fetch_add(1, std::memory_order_relaxed);
     if (const auto* next = queue.acquire()) {
         start_dma(next);
     } else {
         running = false;
         pwm_set_chan_level(pwm_slice, PWM_CHAN_A, 128);
-        gpio_put(PIMORONI_EXPLORER_SPEAKER_AMP_ENABLE_PIN, 0);
-        ++stats.underruns;
+        if (gate_amplifier_on_underrun(amplifier_policy))
+            gpio_put(PIMORONI_EXPLORER_SPEAKER_AMP_ENABLE_PIN, 0);
+        stats.underruns.fetch_add(1, std::memory_order_relaxed);
     }
 }
 }  // namespace
 
-bool init(unsigned sample_rate) {
-    stats = {};
+bool init(unsigned sample_rate, AmplifierPolicy policy) {
+    stats.reset();
     queue.reset();
     running = false;
+    amplifier_policy = policy;
 
     gpio_init(PIMORONI_EXPLORER_SPEAKER_AMP_ENABLE_PIN);
     gpio_set_dir(PIMORONI_EXPLORER_SPEAKER_AMP_ENABLE_PIN, GPIO_OUT);
@@ -78,22 +90,33 @@ bool init(unsigned sample_rate) {
     dma_channel_set_irq1_enabled(dma_channel, true);
     irq_set_exclusive_handler(DMA_IRQ_1, dma_isr);
     irq_set_enabled(DMA_IRQ_1, true);
+    if (amplifier_policy == AmplifierPolicy::HoldEnabled)
+        gpio_put(PIMORONI_EXPLORER_SPEAKER_AMP_ENABLE_PIN, 1);
     return true;
 }
 
-void submit(const float* samples, std::size_t count) {
-    if (samples == nullptr || dma_channel < 0) return;
+bool submit(const float* samples, std::size_t count) {
+    if (samples == nullptr || dma_channel < 0) return false;
     const auto irq_state = save_and_disable_interrupts();
     if (!queue.submit(samples, count)) {
-        ++stats.overruns;
+        stats.overruns.fetch_add(1, std::memory_order_relaxed);
         restore_interrupts(irq_state);
-        return;
+        return false;
     }
-    ++stats.submitted;
+    stats.submitted.fetch_add(1, std::memory_order_relaxed);
     if (!running) {
         if (const auto* next = queue.acquire()) start_dma(next);
     }
     restore_interrupts(irq_state);
+    return true;
+}
+
+bool can_submit() {
+    if (dma_channel < 0) return false;
+    const auto irq_state = save_and_disable_interrupts();
+    const bool available = queue.has_free();
+    restore_interrupts(irq_state);
+    return available;
 }
 
 void shutdown() {
@@ -109,5 +132,12 @@ void shutdown() {
     pwm_set_enabled(pwm_slice, false);
 }
 
-Diagnostics diagnostics() { return stats; }
+Diagnostics diagnostics() {
+    return {
+        stats.submitted.load(std::memory_order_relaxed),
+        stats.played.load(std::memory_order_relaxed),
+        stats.underruns.load(std::memory_order_relaxed),
+        stats.overruns.load(std::memory_order_relaxed),
+    };
+}
 }  // namespace cpcexplorer::audio

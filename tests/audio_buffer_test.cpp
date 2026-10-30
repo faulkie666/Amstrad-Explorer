@@ -10,13 +10,16 @@ int main() {
     std::array<float, 128> negative{};
     negative.fill(-1.0f);
 
+    if (!queue.has_free()) return 1;
     if (!queue.submit(positive.data(), positive.size())) return 1;
     const auto* first = queue.acquire();
     if (first == nullptr || first[0] != 176 || queue.acquire() != nullptr) return 2;
     if (!queue.submit(negative.data(), negative.size())) return 3;
+    if (queue.has_free()) return 4;
     if (queue.submit(positive.data(), positive.size())) return 4;
 
     queue.complete();
+    if (!queue.has_free()) return 5;
     const auto* second = queue.acquire();
     if (second == nullptr || second[0] != 80) return 5;
     queue.complete();

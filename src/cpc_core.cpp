@@ -1,5 +1,6 @@
 #include "cpc_core.h"
 #include "game_library.h"
+#include "packed_library.h"
 
 #include <cassert>
 #include <algorithm>
@@ -51,16 +52,14 @@ EngineKind active_engine = EngineKind::Reference;
 AudioCallback audio_callback = nullptr;
 void* audio_callback_user = nullptr;
 AudioDiagnostics audio_diag{};
-#if defined(CPCEXPLORER_HOST_TESTS)
-testing::AyWriteCallback host_ay_write_callback = nullptr;
+AyWriteCallback ay_write_callback = nullptr;
 void* host_ay_write_callback_user = nullptr;
 void trace_ay_bus(std::uint64_t cycle, std::uint64_t pins, const ay38910_t& ay) {
-    if (!host_ay_write_callback || !(pins & AY38910_BDIR)) return;
+    if (!ay_write_callback || !(pins & AY38910_BDIR)) return;
     const auto value = AY38910_GET_DATA(pins);
     const auto reg = (pins & AY38910_BC1) ? std::uint8_t{0xFF} : ay.addr;
-    host_ay_write_callback(cycle, reg, value, host_ay_write_callback_user);
+    ay_write_callback(cycle, reg, value, host_ay_write_callback_user);
 }
-#endif
 
 void core_audio_packet(const float* samples, int count, void*) {
     audio_diag.samples += static_cast<std::uint64_t>(count);
@@ -406,9 +405,7 @@ static std::uint64_t fast_io_transaction(cpc_t& sys, std::uint16_t port,
             if (sys.ppi.pins & I8255_PC7) ay_pins |= AY38910_BDIR;
             if (sys.ppi.pins & I8255_PC6) ay_pins |= AY38910_BC1;
             AY38910_SET_DATA(ay_pins, I8255_GET_PA(sys.ppi.pins));
-#if defined(CPCEXPLORER_HOST_TESTS)
             trace_ay_bus(fast.cycles, ay_pins, sys.psg);
-#endif
             ay_pins = ay38910_iorq(&sys.psg, ay_pins);
             I8255_SET_PA(ppi_pins, AY38910_GET_DATA(ay_pins));
         }
@@ -422,9 +419,7 @@ static std::uint64_t fast_io_transaction(cpc_t& sys, std::uint16_t port,
             if (ppi_pins & I8255_PC7) ay_pins |= AY38910_BDIR;
             if (ppi_pins & I8255_PC6) ay_pins |= AY38910_BC1;
             AY38910_SET_DATA(ay_pins, I8255_GET_PA(ppi_pins));
-#if defined(CPCEXPLORER_HOST_TESTS)
             trace_ay_bus(fast.cycles, ay_pins, sys.psg);
-#endif
             ay38910_iorq(&sys.psg, ay_pins);
         }
         kbd_set_active_columns(&sys.kbd, 1U << (I8255_GET_PC(ppi_pins) & 0x0F));
@@ -763,6 +758,10 @@ void key_up(int key_code) {
     reference_key_up(key_code);
 }
 
+void set_digital_joystick(bool enabled) {
+    cpc_set_joystick_type(&machine, enabled ? CPC_JOYSTICK_DIGITAL : CPC_JOYSTICK_NONE);
+}
+
 bool quickload(const std::uint8_t* data, std::size_t size, bool start) {
 #if defined(CPCEXPLORER_FAST_ENGINE)
     if (active_engine == EngineKind::Fast) return fast_quickload(data, size, start);
@@ -779,6 +778,49 @@ bool save_sna(std::uint8_t* destination, std::size_t size) {
 
 bool load_sna(const std::uint8_t* data, std::size_t size) {
     return library::is_supported_snapshot(data, size) && quickload(data, size, false);
+}
+
+bool load_packed_sna(const packed::Record& record) {
+    if (!record.payload || record.compressed_length <= packed::kSnaHeaderBytes ||
+        !packed::decode_snapshot(record, &machine.ram[0][0], sizeof(machine.ram))) return false;
+    const auto* hdr = reinterpret_cast<const _cpc_sna_header*>(record.payload);
+    reset_psg_phase(machine);
+    z80_reset(&machine.cpu);
+    machine.cpu.f = hdr->F; machine.cpu.a = hdr->A;
+    machine.cpu.c = hdr->C; machine.cpu.b = hdr->B;
+    machine.cpu.e = hdr->E; machine.cpu.d = hdr->D;
+    machine.cpu.l = hdr->L; machine.cpu.h = hdr->H;
+    machine.cpu.r = hdr->R; machine.cpu.i = hdr->I;
+    machine.cpu.iff1 = (hdr->IFF1 & 1) != 0;
+    machine.cpu.iff2 = (hdr->IFF2 & 1) != 0;
+    machine.cpu.ix = (hdr->IX_h << 8) | hdr->IX_l;
+    machine.cpu.iy = (hdr->IY_h << 8) | hdr->IY_l;
+    machine.cpu.sp = (hdr->SP_h << 8) | hdr->SP_l;
+    machine.cpu.pc = (hdr->PC_h << 8) | hdr->PC_l;
+    machine.cpu.im = hdr->IM;
+    machine.cpu.af2 = (hdr->A_ << 8) | hdr->F_;
+    machine.cpu.bc2 = (hdr->B_ << 8) | hdr->C_;
+    machine.cpu.de2 = (hdr->D_ << 8) | hdr->E_;
+    machine.cpu.hl2 = (hdr->H_ << 8) | hdr->L_;
+    machine.pins = z80_prefetch(&machine.cpu, machine.cpu.pc);
+    for (int i = 0; i < 16; ++i) machine.ga.regs.ink[i] = hdr->pens[i] & 0x1F;
+    machine.ga.regs.border = hdr->pens[16] & 0x1F;
+    machine.ga.regs.inksel = hdr->selected_pen & 0x1F;
+    machine.ga.regs.config = hdr->gate_array_config & 0x3F;
+    machine.ga.ram_config = hdr->ram_config & 0x3F;
+    machine.ga.rom_select = hdr->rom_config;
+    _cpc_bankswitch(machine.ga.ram_config, machine.ga.regs.config,
+                    machine.ga.rom_select, &machine);
+    for (int i = 0; i < 18; ++i) machine.crtc.reg[i] = hdr->crtc_regs[i];
+    machine.crtc.sel = hdr->crtc_selected;
+    machine.ppi.pa.outp = hdr->ppi_a; machine.ppi.pb.outp = hdr->ppi_b;
+    machine.ppi.pc.outp = hdr->ppi_c; machine.ppi.control = hdr->ppi_control;
+    for (int i = 0; i < 16; ++i) ay38910_set_register(&machine.psg, i, hdr->psg_regs[i]);
+    ay38910_set_addr_latch(&machine.psg, hdr->psg_selected);
+#if defined(CPCEXPLORER_FAST_ENGINE)
+    if (active_engine == EngineKind::Fast) reload_fast_cpu();
+#endif
+    return true;
 }
 
 bool load_builtin_knight_tyme() {
@@ -814,16 +856,26 @@ void set_audio_callback(AudioCallback callback, void* user) {
     audio_callback = callback; audio_callback_user = user;
 }
 AudioDiagnostics audio_diagnostics() { return audio_diag; }
+void set_ay_write_callback(AyWriteCallback callback, void* user) {
+    ay_write_callback = callback;
+    host_ay_write_callback_user = user;
+}
+void set_external_ay_renderer(bool enabled) {
+#if defined(CPCEXPLORER_FAST_ENGINE)
+    fast.audio_enabled = !enabled;
+#else
+    (void)enabled;
+#endif
+}
+void copy_ay_registers(std::uint8_t* destination, std::size_t size) {
+    if (!destination || size == 0) return;
+    std::memcpy(destination, machine.psg.reg,
+                std::min(size, static_cast<std::size_t>(AY38910_NUM_REGISTERS)));
+}
 
 namespace testing {
 void set_ay_write_callback(AyWriteCallback callback, void* user) {
-#if defined(CPCEXPLORER_HOST_TESTS)
-    host_ay_write_callback = callback;
-    host_ay_write_callback_user = user;
-#else
-    (void)callback;
-    (void)user;
-#endif
+    cpcexplorer::set_ay_write_callback(callback, user);
 }
 void ay_write_register(std::uint8_t reg, std::uint8_t value) {
     if (reg < AY38910_NUM_REGISTERS) { ay38910_set_register(&machine.psg, reg, value); ++audio_diag.register_writes; }

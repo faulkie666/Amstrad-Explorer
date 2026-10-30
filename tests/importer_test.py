@@ -47,6 +47,23 @@ with tempfile.TemporaryDirectory() as directory:
     if rejected_controls.returncode == 0 or "unsupported control profile" not in rejected_controls.stderr:
         raise SystemExit("invalid control metadata did not fail closed")
 
+    # The deployed launcher exposes incremental games through an A-Z hierarchy.
+    # Reject incompatible titles before opening the requested serial port.
+    for game_id, title in (("4kroid", "4kroid"), ("digit", "9 Lives"),
+                           ("punct", "! Invaders")):
+        hidden = root / f"{game_id}.cpcgame"
+        made = run("import-sna", str(source), "--id", game_id, "--title", title,
+                   "--output", str(hidden))
+        rejected = run("upload", str(hidden), "--port", "COM-NOT-REAL",
+                       "--confirm", "UPLOAD")
+        if made.returncode or rejected.returncode == 0 or \
+                "launcher visibility requires an alphabetic title" not in rejected.stderr or \
+                "could not open port" in rejected.stderr:
+            raise SystemExit(f"hidden launcher title {title!r} was not rejected before serial access")
+    alphabetic = run("upload", str(first), "--port", "COM-NOT-REAL", "--confirm", "UPLOAD")
+    if "launcher visibility requires" in alphabetic.stderr:
+        raise SystemExit("valid alphabetic launcher title was rejected")
+
     # Version 2 and 3 snapshots identify the source machine at offset 0x6D.
     # Only a native CPC464 snapshot may be described as CPC464 by the package.
     snapshot[16] = 2
