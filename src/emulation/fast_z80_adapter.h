@@ -10,11 +10,20 @@ extern "C" {
 
 typedef struct fast_z80 fast_z80;
 
+#if defined(CPCEXPLORER_FAST_DIRECT_CALLBACKS)
+struct z80_s;
+typedef uint8_t (*fast_z80_mem_read_fn)(struct z80_s*, uint16_t, int, void*);
+typedef void (*fast_z80_mem_write_fn)(struct z80_s*, uint16_t, uint8_t, void*);
+typedef uint8_t (*fast_z80_io_read_fn)(struct z80_s*, uint16_t, void*);
+typedef void (*fast_z80_io_write_fn)(struct z80_s*, uint16_t, uint8_t, void*);
+typedef void (*fast_z80_intack_fn)(struct z80_s*, void*);
+#else
 typedef uint8_t (*fast_z80_mem_read_fn)(void*, uint16_t, bool, int);
 typedef void (*fast_z80_mem_write_fn)(void*, uint16_t, uint8_t, int);
 typedef uint8_t (*fast_z80_io_read_fn)(void*, uint16_t, int);
 typedef void (*fast_z80_io_write_fn)(void*, uint16_t, uint8_t, int);
 typedef void (*fast_z80_intack_fn)(void*, int);
+#endif
 
 typedef struct fast_z80_callbacks {
     fast_z80_mem_read_fn mem_read;
@@ -39,6 +48,7 @@ void fast_z80_destroy(fast_z80* cpu);
 void fast_z80_load_state(fast_z80* cpu, const fast_z80_state* state);
 void fast_z80_get_state(const fast_z80* cpu, fast_z80_state* state);
 int fast_z80_step(fast_z80* cpu);
+int fast_z80_run_bounded(fast_z80* cpu, int target_cycles);
 void fast_z80_raise_int(fast_z80* cpu);
 void fast_z80_set_memory_pages(fast_z80* cpu,
                                uint8_t* const read_pages[16],

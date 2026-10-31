@@ -44,6 +44,21 @@ def main() -> None:
         "HOT Z80_EXEC_ATTR int Z80_EXEC_FN(z80_t *cpu, int target_cycles) {",
     )
     replace_once(
+        root / "z80_execute.inc",
+        "        /* HALT - cykly už přičteny v NEXT_SLOW(4) */\n"
+        "        if (cpu->halted) goto done;\n\n"
+        "        if (cycles_executed >= target_cycles) goto done;",
+        "        /* HALT - cykly už přičteny v NEXT_SLOW(4) */\n"
+        "        if (cpu->halted) goto done;\n\n"
+        "#if Z80_DIRECT_REGS && defined(CPU_Z80_BOUNDED_SPANS)\n"
+        "        /* EI, DI, HALT, RETI and RETN use NEXT_SLOW.  End a bounded\n"
+        "         * span at each such instruction so their interrupt-visible\n"
+        "         * transition remains an external scheduling boundary. */\n"
+        "        goto done;\n"
+        "#endif\n\n"
+        "        if (cycles_executed >= target_cycles) goto done;",
+    )
+    replace_once(
         root / "z80.c",
         "HOT int z80_execute_batch(z80_t *cpu, int target_cycles);\n"
         "HOT int z80_execute_step(z80_t *cpu, int target_cycles);",

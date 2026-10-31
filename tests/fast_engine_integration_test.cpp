@@ -44,6 +44,15 @@ std::size_t difference(const std::vector<std::uint8_t>& a,
     return count;
 }
 
+std::uint64_t fnv1a64(const std::vector<std::uint8_t>& bytes) {
+    std::uint64_t hash = 1469598103934665603ULL;
+    for (const auto byte : bytes) {
+        hash ^= byte;
+        hash *= 1099511628211ULL;
+    }
+    return hash;
+}
+
 void run_frames(int count) {
     for (int i = 0; i < count; ++i) cpcexplorer::run_us(20'000);
 }
@@ -124,6 +133,29 @@ struct BenchResult {
     cpcexplorer::Diagnostics diagnostics;
 };
 
+cpcexplorer::testing::FastStateDigest digest_run(
+        const std::vector<std::uint8_t>* snapshot, unsigned span_cycles,
+        int frames = 250) {
+    cpcexplorer::select_engine(cpcexplorer::EngineKind::Fast);
+    cpcexplorer::init();
+    cpcexplorer::testing::set_fast_span_cycles(span_cycles);
+    if (snapshot) cpcexplorer::load_sna(snapshot->data(), snapshot->size());
+    run_frames(frames);
+    return cpcexplorer::testing::fast_state_digest();
+}
+
+bool same_state(const cpcexplorer::testing::FastStateDigest& a,
+                const cpcexplorer::testing::FastStateDigest& b) {
+    return a.gate_array_hash == b.gate_array_hash &&
+           a.crtc_hash == b.crtc_hash && a.ppi_hash == b.ppi_hash &&
+           a.psg_hash == b.psg_hash && a.ram_hash == b.ram_hash &&
+           a.framebuffer_hash == b.framebuffer_hash && a.cycles == b.cycles &&
+           a.af == b.af && a.bc == b.bc && a.de == b.de && a.hl == b.hl &&
+           a.ix == b.ix && a.iy == b.iy && a.sp == b.sp && a.pc == b.pc &&
+           a.i == b.i && a.r == b.r && a.im == b.im &&
+           a.iff1 == b.iff1 && a.iff2 == b.iff2 && a.halted == b.halted;
+}
+
 BenchResult benchmark(cpcexplorer::EngineKind engine,
                       const std::vector<std::uint8_t>* snapshot,
                       cpcexplorer::testing::FastBenchmarkMode mode =
@@ -146,8 +178,65 @@ BenchResult benchmark(cpcexplorer::EngineKind engine,
 int main() {
     const auto manic = read_file(CPCEXPLORER_MANIC_SNA);
     const auto knight = read_file(CPCEXPLORER_KNIGHT_SNA);
-    if (!expect(manic.size() == 65792 && knight.size() == 65792,
+    const auto fly_spy = read_file(CPCEXPLORER_FLY_SPY_SNA);
+    if (!expect(manic.size() == 65792 && knight.size() == 65792 &&
+                fly_spy.size() == 65792,
                 "required 64 KiB CPC464 snapshots exist")) return 1;
+
+#if defined(CPCEXPLORER_STAGE4L3_BOUNDED_Z80)
+    struct DifferentialCase {
+        const char* name;
+        const std::vector<std::uint8_t>* snapshot;
+    };
+    const DifferentialCase differential_cases[] = {
+        {"basic", nullptr}, {"knight_tyme", &knight},
+        {"manic_miner", &manic}, {"fly_spy", &fly_spy},
+    };
+    for (const auto& scenario : differential_cases) {
+        const auto reference = digest_run(scenario.snapshot, 1);
+        for (const unsigned span : {4U, 8U, 16U, 32U}) {
+            const auto candidate = digest_run(scenario.snapshot, span);
+            if (!expect(same_state(reference, candidate),
+                        "bounded execution is state-exact against per-instruction execution")) {
+                std::fprintf(stderr,
+                    "DIVERGENCE game=%s span=%u ref_pc=%04x got_pc=%04x ref_cycles=%llu got_cycles=%llu ref_ram=%016llx got_ram=%016llx ga=%016llx/%016llx crtc=%016llx/%016llx ppi=%016llx/%016llx psg=%016llx/%016llx ref_fb=%016llx got_fb=%016llx\n",
+                    scenario.name, span, reference.pc, candidate.pc,
+                    static_cast<unsigned long long>(reference.cycles),
+                    static_cast<unsigned long long>(candidate.cycles),
+                    static_cast<unsigned long long>(reference.ram_hash),
+                    static_cast<unsigned long long>(candidate.ram_hash),
+                    static_cast<unsigned long long>(reference.gate_array_hash),
+                    static_cast<unsigned long long>(candidate.gate_array_hash),
+                    static_cast<unsigned long long>(reference.crtc_hash),
+                    static_cast<unsigned long long>(candidate.crtc_hash),
+                    static_cast<unsigned long long>(reference.ppi_hash),
+                    static_cast<unsigned long long>(candidate.ppi_hash),
+                    static_cast<unsigned long long>(reference.psg_hash),
+                    static_cast<unsigned long long>(candidate.psg_hash),
+                    static_cast<unsigned long long>(reference.framebuffer_hash),
+                    static_cast<unsigned long long>(candidate.framebuffer_hash));
+                return 1;
+            }
+        }
+        std::printf("SPAN_DIFFERENTIAL game=%s spans=4,8,16,32 result=exact cycles=%llu ram=%016llx peripheral=%016llx framebuffer=%016llx\n",
+            scenario.name, static_cast<unsigned long long>(reference.cycles),
+            static_cast<unsigned long long>(reference.ram_hash),
+            static_cast<unsigned long long>(reference.machine_hash),
+            static_cast<unsigned long long>(reference.framebuffer_hash));
+    }
+    for (const unsigned span : {1U, 4U, 8U, 16U, 32U, 64U, 128U, 256U}) {
+        cpcexplorer::select_engine(cpcexplorer::EngineKind::Fast);
+        cpcexplorer::init();
+        cpcexplorer::testing::set_fast_span_cycles(span);
+        cpcexplorer::load_sna(fly_spy.data(), fly_spy.size());
+        const auto start = Clock::now();
+        run_frames(250);
+        const auto elapsed = std::chrono::duration<double, std::milli>(Clock::now() - start).count();
+        std::printf("SPAN_BENCH game=fly_spy span_cycles=%u emulated_ms=5000 host_ms=%.3f\n",
+                    span, elapsed);
+    }
+    cpcexplorer::select_engine(cpcexplorer::EngineKind::Reference);
+#endif
 
     if (!expect(cpcexplorer::selected_engine() == cpcexplorer::EngineKind::Reference,
                 "reference engine is the startup default") ||
@@ -256,6 +345,7 @@ int main() {
     const auto fast_knight = benchmark(cpcexplorer::EngineKind::Fast, &knight);
     const auto reference_manic = benchmark(cpcexplorer::EngineKind::Reference, &manic);
     const auto fast_manic = benchmark(cpcexplorer::EngineKind::Fast, &manic);
+    const auto fast_fly_spy = benchmark(cpcexplorer::EngineKind::Fast, &fly_spy);
     const auto component_cost = [&](const char* game,
                                     const std::vector<std::uint8_t>* snapshot) {
         constexpr int kFrames = 250;
@@ -290,6 +380,24 @@ int main() {
         reference_manic.milliseconds / fast_manic.milliseconds,
         static_cast<unsigned long long>(fast_manic.diagnostics.peripheral_dispatches),
         static_cast<unsigned long long>(fast_manic.diagnostics.reconstructed_frames));
+    std::printf("ENGINE_BENCH game=fly_spy emulated_ms=1000 fast_ms=%.3f dispatch=%llu frames=%llu\n",
+        fast_fly_spy.milliseconds,
+        static_cast<unsigned long long>(fast_fly_spy.diagnostics.peripheral_dispatches),
+        static_cast<unsigned long long>(fast_fly_spy.diagnostics.reconstructed_frames));
+    cpcexplorer::select_engine(cpcexplorer::EngineKind::Fast);
+    cpcexplorer::init();
+    if (!expect(cpcexplorer::load_sna(fly_spy.data(), fly_spy.size()),
+                "Fly Spy diskless snapshot reloads")) return 9;
+    run_frames(250);
+    const auto fly_spy_diag = cpcexplorer::diagnostics();
+    const auto fly_spy_frame = frame();
+    std::printf("ENGINE_CHECKPOINT game=fly_spy frames=250 pc=%04x ticks=%llu framebuffer_fnv1a64=%016llx\n",
+        fly_spy_diag.pc,
+        static_cast<unsigned long long>(fly_spy_diag.z80_ticks),
+        static_cast<unsigned long long>(fnv1a64(fly_spy_frame)));
+    if (!expect(fly_spy_diag.pc != 0 && fly_spy_diag.z80_ticks >= 20'000'000 &&
+                fly_spy_frame.size() == 768 * 272,
+                "Fly Spy advances deterministically with a complete framebuffer")) return 9;
     component_cost("basic", nullptr);
     component_cost("knight_tyme", &knight);
     component_cost("manic_miner", &manic);

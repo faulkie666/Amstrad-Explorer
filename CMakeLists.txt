@@ -23,6 +23,8 @@ option(CPCEXPLORER_STAGE4J1_QWST "Build isolated Qw/ST Pad and game-audio accept
 option(CPCEXPLORER_STAGE4J2C_KNIGHT "Build isolated Qw/ST Knight Tyme orientation correction" OFF)
 option(CPCEXPLORER_STAGE4J3_MIGRATION_FIX "Build isolated two-descriptor migration precondition correction" OFF)
 option(CPCEXPLORER_STAGE4K3_INCREMENTAL_LIBRARY "Build isolated packed-plus-legacy launcher overlay" OFF)
+option(CPCEXPLORER_STAGE4L2_Z80_CALLBACKS "Build isolated direct Z80 callback performance experiment" OFF)
+option(CPCEXPLORER_STAGE4L3_BOUNDED_Z80 "Build isolated bounded multi-instruction Z80 experiment" OFF)
 set(CPCEXPLORER_STAGE4F2_VARIANT "NONE" CACHE STRING "Stage 4F.2 isolated build: NONE, FAST_DISPLAY or OPT_DISPLAY")
 set_property(CACHE CPCEXPLORER_STAGE4F2_VARIANT PROPERTY STRINGS NONE FAST_DISPLAY OPT_DISPLAY)
 set(CPCEXPLORER_DEFAULT_ENGINE "REFERENCE" CACHE STRING "Runtime engine selected by firmware main: REFERENCE or FAST")
@@ -112,6 +114,16 @@ if(CPCEXPLORER_ENABLE_FAST_ENGINE)
     if(CPCEXPLORER_STAGE4F6_SRAM_STEP)
         list(APPEND CPCEXPLORER_FAST_SOURCE_DEFINITIONS CPU_Z80_SRAM_EXECUTE_STEP=1)
     endif()
+    if(CPCEXPLORER_STAGE4L2_Z80_CALLBACKS)
+        list(APPEND CPCEXPLORER_FAST_SOURCE_DEFINITIONS CPCEXPLORER_FAST_DIRECT_CALLBACKS=1)
+        target_compile_definitions(cpc_core PRIVATE
+            CPCEXPLORER_STAGE4L2_Z80_CALLBACKS=1
+            CPCEXPLORER_FAST_DIRECT_CALLBACKS=1)
+    endif()
+    if(CPCEXPLORER_STAGE4L3_BOUNDED_Z80)
+        list(APPEND CPCEXPLORER_FAST_SOURCE_DEFINITIONS CPU_Z80_BOUNDED_SPANS=1)
+        target_compile_definitions(cpc_core PRIVATE CPCEXPLORER_STAGE4L3_BOUNDED_Z80=1)
+    endif()
     set_source_files_properties(
         src/emulation/fast_z80_adapter.c
         "${cpu_z80_SOURCE_DIR}/cpu-z80/cpu/z80.c"
@@ -144,7 +156,11 @@ if(CPCEXPLORER_BUILD_FIRMWARE)
         target_sources(cpc_core PRIVATE "${GENERATED_SNAPSHOT}")
         target_compile_definitions(cpc_core PRIVATE CPCEXPLORER_KNIGHT_TYME=1)
         if(CPCEXPLORER_STARTUP STREQUAL "LIBRARY_FAST")
-            if(CPCEXPLORER_STAGE4K3_INCREMENTAL_LIBRARY)
+            if(CPCEXPLORER_STAGE4L3_BOUNDED_Z80)
+                set(CPCEXPLORER_TARGET cpc_explorer_bounded_z80_exp)
+            elseif(CPCEXPLORER_STAGE4L2_Z80_CALLBACKS)
+                set(CPCEXPLORER_TARGET cpc_explorer_z80_callbacks_exp)
+            elseif(CPCEXPLORER_STAGE4K3_INCREMENTAL_LIBRARY)
                 set(CPCEXPLORER_TARGET cpc_explorer_incremental_library_exp)
             elseif(CPCEXPLORER_STAGE4J3_MIGRATION_FIX)
                 set(CPCEXPLORER_TARGET cpc_explorer_migration_catalog_fix_exp)
@@ -272,6 +288,12 @@ if(CPCEXPLORER_BUILD_FIRMWARE)
         if(CPCEXPLORER_STAGE4K3_INCREMENTAL_LIBRARY AND NOT CPCEXPLORER_STAGE4J3_MIGRATION_FIX)
             message(FATAL_ERROR "Stage 4K.3 requires the complete Stage 4J.3 migration-fix baseline")
         endif()
+        if(CPCEXPLORER_STAGE4L2_Z80_CALLBACKS AND NOT CPCEXPLORER_STAGE4K3_INCREMENTAL_LIBRARY)
+            message(FATAL_ERROR "Stage 4L.2 requires the complete Stage 4K.3 incremental-library baseline")
+        endif()
+        if(CPCEXPLORER_STAGE4L3_BOUNDED_Z80 AND NOT CPCEXPLORER_STAGE4L2_Z80_CALLBACKS)
+            message(FATAL_ERROR "Stage 4L.3 requires the complete Stage 4L.2 callback baseline")
+        endif()
         if(CPCEXPLORER_STAGE4F2_VARIANT STREQUAL "FAST_DISPLAY" AND
            (CPCEXPLORER_FAST_RAM_ACCESS OR CPCEXPLORER_FAST_Z80_SRAM OR CPCEXPLORER_STAGE4F1_EXPERIMENT))
             message(FATAL_ERROR "Stage 4F.2 FAST_DISPLAY must use the unoptimised Stage 4E.2 Z80 path")
@@ -344,7 +366,21 @@ if(CPCEXPLORER_BUILD_FIRMWARE)
                 PICO_STDIO_USB_STDOUT_TIMEOUT_US=1000
                 PICO_STDIO_DEADLOCK_TIMEOUT_MS=1)
             if(CPCEXPLORER_STARTUP STREQUAL "LIBRARY_FAST")
-                if(CPCEXPLORER_STAGE4K3_INCREMENTAL_LIBRARY)
+                if(CPCEXPLORER_STAGE4L3_BOUNDED_Z80)
+                    target_compile_definitions(${CPCEXPLORER_TARGET} PRIVATE
+                        CPCEXPLORER_ACTIVE_DISPLAY_FIT=1
+                        CPCEXPLORER_CONTINUOUS_AMP=1
+                        CPCEXPLORER_STAGE4H5D_AUDIO_CORRECTION=1
+                        CPCEXPLORER_INTERNAL_LIBRARY=1)
+                    set(CPCEXPLORER_VERSION "0.4.30-stage4l3boundedz80")
+                elseif(CPCEXPLORER_STAGE4L2_Z80_CALLBACKS)
+                    target_compile_definitions(${CPCEXPLORER_TARGET} PRIVATE
+                        CPCEXPLORER_ACTIVE_DISPLAY_FIT=1
+                        CPCEXPLORER_CONTINUOUS_AMP=1
+                        CPCEXPLORER_STAGE4H5D_AUDIO_CORRECTION=1
+                        CPCEXPLORER_INTERNAL_LIBRARY=1)
+                    set(CPCEXPLORER_VERSION "0.4.29-stage4l2z80callbacks")
+                elseif(CPCEXPLORER_STAGE4K3_INCREMENTAL_LIBRARY)
                     target_compile_definitions(${CPCEXPLORER_TARGET} PRIVATE
                         CPCEXPLORER_ACTIVE_DISPLAY_FIT=1
                         CPCEXPLORER_CONTINUOUS_AMP=1
@@ -510,9 +546,15 @@ if(CPCEXPLORER_BUILD_FIRMWARE)
             VERBATIM)
     endif()
     if(CPCEXPLORER_STAGE4F6_SRAM_STEP)
+        if(CPCEXPLORER_STAGE4L3_BOUNDED_Z80)
+            set(CPCEXPLORER_EXPECTED_SRAM_STEP_BYTES 75884)
+        else()
+            set(CPCEXPLORER_EXPECTED_SRAM_STEP_BYTES 76212)
+        endif()
         add_custom_command(TARGET ${CPCEXPLORER_TARGET} POST_BUILD
             COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_LIST_DIR}/tools/check_stage4f6_sram.py"
                     "$<TARGET_FILE:${CPCEXPLORER_TARGET}>.map"
+                    "${CPCEXPLORER_EXPECTED_SRAM_STEP_BYTES}"
             VERBATIM)
     endif()
     if(CPCEXPLORER_STAGE4H5B_DUAL_CORE_AY OR CPCEXPLORER_STAGE4H5D_AUDIO_CORRECTION)
@@ -596,9 +638,20 @@ else()
             target_compile_definitions(cpc_fast_engine_integration_test PRIVATE
                 CPCEXPLORER_FAST_RAM_VERIFY=1)
         endif()
+        if(CPCEXPLORER_STAGE4L3_BOUNDED_Z80)
+            add_executable(cpc_bounded_z80_test tests/bounded_z80_test.cpp)
+            target_link_libraries(cpc_bounded_z80_test PRIVATE cpc_core)
+            target_compile_definitions(cpc_bounded_z80_test PRIVATE
+                CPCEXPLORER_FAST_DIRECT_CALLBACKS=1)
+        endif()
         target_compile_definitions(cpc_fast_engine_integration_test PRIVATE
             CPCEXPLORER_MANIC_SNA="${CMAKE_CURRENT_LIST_DIR}/artifacts/stage4c1a-manic-miner/manic-miner-native.sna"
-            CPCEXPLORER_KNIGHT_SNA="${CMAKE_CURRENT_LIST_DIR}/snapshots/knight-tyme.sna")
+            CPCEXPLORER_KNIGHT_SNA="${CMAKE_CURRENT_LIST_DIR}/snapshots/knight-tyme.sna"
+            CPCEXPLORER_FLY_SPY_SNA="${CMAKE_CURRENT_LIST_DIR}/artifacts/stage4l-fly-spy/capture/flyspy-diskless.sna")
+        if(CPCEXPLORER_STAGE4L3_BOUNDED_Z80)
+            target_compile_definitions(cpc_fast_engine_integration_test PRIVATE
+                CPCEXPLORER_STAGE4L3_BOUNDED_Z80=1)
+        endif()
     endif()
     if(MSVC)
         target_compile_options(cpc_core PRIVATE /W4 /permissive-)
@@ -628,6 +681,9 @@ else()
         target_compile_options(cpc_display_fit_test PRIVATE -Wall -Wextra -Wpedantic)
         if(CPCEXPLORER_ENABLE_FAST_ENGINE)
             target_compile_options(cpc_fast_engine_integration_test PRIVATE -Wall -Wextra -Wpedantic)
+            if(CPCEXPLORER_STAGE4L3_BOUNDED_Z80)
+                target_compile_options(cpc_bounded_z80_test PRIVATE -Wall -Wextra -Wpedantic)
+            endif()
         endif()
     endif()
     enable_testing()
@@ -671,5 +727,8 @@ else()
     endif()
     if(CPCEXPLORER_ENABLE_FAST_ENGINE)
         add_test(NAME cpc_fast_engine_integration COMMAND cpc_fast_engine_integration_test)
+        if(CPCEXPLORER_STAGE4L3_BOUNDED_Z80)
+            add_test(NAME cpc_bounded_z80 COMMAND cpc_bounded_z80_test)
+        endif()
     endif()
 endif()

@@ -10,6 +10,7 @@ struct fast_z80 {
     fast_z80_callbacks callbacks;
 };
 
+#if !defined(CPCEXPLORER_FAST_DIRECT_CALLBACKS)
 static uint8_t mem_read(z80_t* core, uint16_t address, int m1, void* opaque) {
     fast_z80* cpu = (fast_z80*)opaque;
     return cpu->callbacks.mem_read(cpu->callbacks.user, address, m1 != 0,
@@ -31,14 +32,15 @@ static void io_write(z80_t* core, uint16_t port, uint8_t value, void* opaque) {
     cpu->callbacks.io_write(cpu->callbacks.user, port, value, core->op_tstate);
 }
 
-static uint8_t int_read(z80_t* core, void* opaque) {
-    (void)core; (void)opaque;
-    return 0xFF;
-}
-
 static void int_ack(z80_t* core, void* opaque) {
     fast_z80* cpu = (fast_z80*)opaque;
     if (cpu->callbacks.intack) cpu->callbacks.intack(cpu->callbacks.user, core->op_tstate);
+}
+#endif
+
+static uint8_t int_read(z80_t* core, void* opaque) {
+    (void)core; (void)opaque;
+    return 0xFF;
 }
 
 fast_z80* fast_z80_create(const fast_z80_callbacks* callbacks) {
@@ -47,10 +49,22 @@ fast_z80* fast_z80_create(const fast_z80_callbacks* callbacks) {
     fast_z80* cpu = (fast_z80*)calloc(1, sizeof(*cpu));
     if (!cpu) return NULL;
     cpu->callbacks = *callbacks;
+#if defined(CPCEXPLORER_FAST_DIRECT_CALLBACKS)
+    cpu->core = z80_create(callbacks->mem_read, callbacks->user,
+                           callbacks->mem_write, callbacks->user,
+                           callbacks->io_read, callbacks->user,
+                           callbacks->io_write, callbacks->user,
+                           int_read, cpu);
+#else
     cpu->core = z80_create(mem_read, cpu, mem_write, cpu, io_read, cpu,
                            io_write, cpu, int_read, cpu);
+#endif
     if (!cpu->core) { free(cpu); return NULL; }
+#if defined(CPCEXPLORER_FAST_DIRECT_CALLBACKS)
+    z80_set_intack(cpu->core, callbacks->intack, callbacks->user);
+#else
     z80_set_intack(cpu->core, int_ack, cpu);
+#endif
     return cpu;
 }
 
@@ -89,6 +103,19 @@ void fast_z80_get_state(const fast_z80* cpu, fast_z80_state* state) {
 }
 
 int fast_z80_step(fast_z80* cpu) { return z80_step(cpu->core); }
+int fast_z80_run_bounded(fast_z80* cpu, int target_cycles) {
+#if defined(CPU_Z80_BOUNDED_SPANS)
+    /* An EI delay must cover exactly the following instruction.  A one-
+     * instruction call lets the core clear the delay on entry, execute that
+     * instruction, and expose the pending interrupt at the next boundary. */
+    if (cpu->core->ei_delay || target_cycles < 1) target_cycles = 1;
+    extern int z80_execute_step(z80_t*, int);
+    return z80_execute_step(cpu->core, target_cycles);
+#else
+    (void)target_cycles;
+    return z80_step(cpu->core);
+#endif
+}
 void fast_z80_raise_int(fast_z80* cpu) { z80_int(cpu->core); }
 void fast_z80_set_memory_pages(fast_z80* cpu,
                                uint8_t* const read_pages[16],

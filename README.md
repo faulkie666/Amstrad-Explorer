@@ -7,8 +7,8 @@
 [![RP2350](https://img.shields.io/badge/target-RP2350-C51A4A?style=for-the-badge&logo=raspberrypi&logoColor=white)](https://www.raspberrypi.com/products/rp2350/)
 [![CPC 464](https://img.shields.io/badge/system-Amstrad_CPC_464-1E90FF?style=for-the-badge)](#emulated-hardware)
 [![C++20](https://img.shields.io/badge/C%2B%2B-20-00599C?style=for-the-badge&logo=cplusplus&logoColor=white)](CMakeLists.txt)
-[![Firmware](https://img.shields.io/badge/firmware-0.4.28-8A2BE2?style=for-the-badge)](docs/STAGE4K7_MASS_LIBRARY_INSTALLATION.md)
-[![Tests](https://img.shields.io/badge/host_tests-26%2F26_passing-2EA44F?style=for-the-badge)](#verification)
+[![Firmware](https://img.shields.io/badge/firmware-0.4.30-8A2BE2?style=for-the-badge)](docs/STAGE4L4_PHYSICAL_Z80_AB_TEST.md)
+[![Tests](https://img.shields.io/badge/host_tests-27%2F27_passing-2EA44F?style=for-the-badge)](#verification)
 [![License](https://img.shields.io/badge/license-GPLv3-F4C430?style=for-the-badge&logo=gnu&logoColor=black)](LICENSE)
 
 **Real CPC ROM execution · fast Z80 engine · native 320×240 display · persistent USB game library**
@@ -52,9 +52,10 @@ comparison while the fast engine provides the practical hardware path.
 
 ## Current hardware status
 
-The current physical baseline is `0.4.28-stage4k7migrationrecoverfix`. It combines
-the SRAM-resident Z80 step routine, active-display fitting, continuous AY audio,
-Qw/ST Pad input, packed-library migration and incremental game installation.
+The current physical baseline is `0.4.30-stage4l3boundedz80`. It combines the
+SRAM-resident Z80 interpreter with bounded multi-instruction execution,
+active-display fitting, continuous AY audio, Qw/ST Pad input, packed-library
+migration and incremental game installation.
 
 | Area | Status |
 |---|---|
@@ -62,23 +63,24 @@ Qw/ST Pad input, packed-library migration and incremental game installation.
 | Knight Tyme | Loads and runs from a verified snapshot |
 | Manic Miner | Loads, uses full-screen active-display fit and accepts gameplay input |
 | Persistent library | Packed base library plus transactional incremental uploads |
-| Installed library | 32 visible titles; one preserved numeric-title record is hidden |
+| Installed library | 33 visible titles; one preserved numeric-title record is hidden |
 | USB protocol | Detect, status, list, upload, remove, migration and bounded readback verified |
 | Flash identity | Winbond EF-40-18, 16 MiB |
 | E10 protection | Final 64 KiB permanently excluded from game storage |
 | Qw/ST Pad | Ten-button I2C controller with keyboard and joystick profiles |
 | AY audio | Dual-core renderer, DMA output and onboard speaker physically verified |
 | Generic controls | Descriptor-driven profiles with legacy package fallback |
-| Host regression suite | 26/26 passing |
+| Host regression suite | 27/27 passing |
 
 The fast engine has been measured on the Explorer at 150 MHz. Results vary with
 the game and peripheral workload:
 
 | Metric | Measured result |
 |---|---:|
-| Effective CPC speed | approximately 69–82.5% |
-| Stage 4F.6 Manic Miner Z80 time | 23.00 ms per 20 ms CPC slice |
-| Stage 4F.6 Manic Miner total loop | 26.94 ms |
+| Fly Spy effective CPC speed | **99.95% average** |
+| Fly Spy Z80 time | **12.56 ms per 20 ms CPC slice** |
+| Fly Spy total loop | **19.97 ms average** |
+| Fly Spy presentation | **12.50 FPS** at the configured 1-in-4 cadence |
 | Display mode | Active-display fit enabled |
 
 These are physical measurements, not desktop benchmark projections. The
@@ -243,6 +245,8 @@ cmake -S . -B build-rp2350 -G Ninja `
   -DCPCEXPLORER_STAGE4J1_QWST=ON `
   -DCPCEXPLORER_STAGE4J3_MIGRATION_FIX=ON `
   -DCPCEXPLORER_STAGE4K3_INCREMENTAL_LIBRARY=ON `
+  -DCPCEXPLORER_STAGE4L2_Z80_CALLBACKS=ON `
+  -DCPCEXPLORER_STAGE4L3_BOUNDED_Z80=ON `
   -DCPCEXPLORER_FAST_PRESENTATION_DIVISOR=4
 
 cmake --build build-rp2350
@@ -320,9 +324,10 @@ catalog erases, catalog programming, final activation, removal recovery,
 generation selection, duplicate IDs, CRC failures, overflow boundaries and
 protected-region overlap.
 
-The current host tree passes all 26 configured tests. Fast-engine integration
-has separate deterministic comparisons against the reference engine for BASIC,
-Knight Tyme and Manic Miner.
+The current host tree passes all 27 configured tests. Fast-engine integration
+performs deterministic bounded-versus-single-instruction comparisons for BASIC,
+Knight Tyme, Manic Miner and Fly Spy, plus synthetic interrupt, EI/DI/HALT,
+memory and I/O edge cases.
 
 ## Documentation
 
@@ -344,6 +349,11 @@ Knight Tyme and Manic Miner.
 - [Packed-library migration](docs/STAGE4I8_FLASH_MIGRATION_TRANSPORT.md)
 - [Incremental packed-library launcher](docs/STAGE4K3_INCREMENTAL_LIBRARY.md)
 - [Bulk conversion and deployment record](docs/STAGE4K8_CONTINUOUS_CONVERSION_FACTORY.md)
+- [Fly Spy installation and gameplay acceptance](docs/STAGE4L_FLY_SPY_ACCEPTANCE.md)
+- [Fly Spy physical performance baseline](docs/STAGE4L1_FLY_SPY_PERFORMANCE.md)
+- [Direct Z80 callback optimisation](docs/STAGE4L2_Z80_PERFORMANCE_OPTIMISATION.md)
+- [Bounded Z80 execution design and host verification](docs/STAGE4L3_BOUNDED_Z80_EXECUTION.md)
+- [Physical 99.95% CPC-speed A/B result](docs/STAGE4L4_PHYSICAL_Z80_AB_TEST.md)
 
 ## Licensing
 

@@ -19,8 +19,9 @@ def symbol(text: str, name: str) -> int:
 
 
 def main() -> None:
-    if len(sys.argv) != 2:
-        raise SystemExit("usage: check_stage4f6_sram.py LINKER_MAP")
+    if len(sys.argv) not in (2, 3):
+        raise SystemExit("usage: check_stage4f6_sram.py LINKER_MAP [EXPECTED_STEP_BYTES]")
+    expected_step_bytes = int(sys.argv[2], 0) if len(sys.argv) == 3 else STEP_BYTES
     text = Path(sys.argv[1]).read_text(encoding="utf-8", errors="replace")
 
     match = re.search(
@@ -33,8 +34,10 @@ def main() -> None:
     step_addr, step_size = (int(value, 16) for value in match.groups())
     if not 0x20000000 <= step_addr < 0x20080000:
         raise SystemExit(f"z80_execute_step is not in main SRAM: 0x{step_addr:08x}")
-    if step_size != STEP_BYTES:
-        raise SystemExit(f"z80_execute_step changed size: {step_size} != {STEP_BYTES}")
+    if step_size != expected_step_bytes:
+        raise SystemExit(
+            f"z80_execute_step changed size: {step_size} != {expected_step_bytes}"
+        )
     if text.count(".time_critical.fast_z80_step") != 1:
         raise SystemExit("unexpected duplicate z80_execute_step SRAM section")
     if ".time_critical.fast_z80_table" in text:

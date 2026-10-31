@@ -237,6 +237,9 @@ struct FastRuntime {
     bool audio_enabled = true;
     testing::FastBenchmarkMode benchmark_mode = testing::FastBenchmarkMode::Full;
     bool diagnostics_enabled = false;
+#if defined(CPCEXPLORER_STAGE4L3_BOUNDED_Z80)
+    std::uint16_t span_cycles = 32;
+#endif
     std::uint32_t last_emulated_us = 0;
     std::uint32_t last_cpu_us = 0;
     std::uint32_t last_event_us = 0;
@@ -453,28 +456,58 @@ static std::uint64_t fast_io_transaction(cpc_t& sys, std::uint16_t port,
     return pins;
 }
 
+#if defined(CPCEXPLORER_STAGE4L2_Z80_CALLBACKS)
+#if defined(PICO_ON_DEVICE)
+#define CPCEXPLORER_Z80_MEM_ATTR __attribute__((section(".time_critical.fast_z80_mem")))
+#else
+#define CPCEXPLORER_Z80_MEM_ATTR
+#endif
+static CPCEXPLORER_Z80_MEM_ATTR std::uint8_t fast_mem_read(
+    ::z80_s*, std::uint16_t address, int, void* opaque) {
+#else
 static std::uint8_t fast_mem_read(void* opaque, std::uint16_t address, bool, int) {
+#endif
     (void)opaque;
     return mem_rd(&machine.mem, address);
 }
+#if defined(CPCEXPLORER_STAGE4L2_Z80_CALLBACKS)
+static CPCEXPLORER_Z80_MEM_ATTR void fast_mem_write(
+    ::z80_s*, std::uint16_t address, std::uint8_t value, void* opaque) {
+#else
 static void fast_mem_write(void* opaque, std::uint16_t address, std::uint8_t value, int) {
+#endif
     (void)opaque;
     mem_wr(&machine.mem, address, value);
 }
+#if defined(CPCEXPLORER_STAGE4L2_Z80_CALLBACKS)
+static std::uint8_t fast_io_read(::z80_s*, std::uint16_t port, void* opaque) {
+#else
 static std::uint8_t fast_io_read(void* opaque, std::uint16_t port, int) {
+#endif
     (void)opaque;
     return Z80_GET_DATA(fast_io_transaction(machine, port, true, 0xFF));
 }
+#if defined(CPCEXPLORER_STAGE4L2_Z80_CALLBACKS)
+static void fast_io_write(::z80_s*, std::uint16_t port, std::uint8_t value, void* opaque) {
+#else
 static void fast_io_write(void* opaque, std::uint16_t port, std::uint8_t value, int) {
+#endif
     (void)opaque;
     fast_io_transaction(machine, port, false, value);
 }
+#if defined(CPCEXPLORER_STAGE4L2_Z80_CALLBACKS)
+static void fast_intack(::z80_s*, void* opaque) {
+#else
 static void fast_intack(void* opaque, int) {
+#endif
     auto& runtime = *static_cast<FastRuntime*>(opaque);
     machine.ga.video.intcnt &= 0x1F;
     machine.ga.video.intr = false;
     (void)runtime;
 }
+#if defined(CPCEXPLORER_STAGE4L2_Z80_CALLBACKS)
+#undef CPCEXPLORER_Z80_MEM_ATTR
+#endif
 
 static void reset_fast_timing() {
     fast.cycles = fast.cycle_budget = fast.instructions = 0;
@@ -590,6 +623,12 @@ static void advance_fast_events() {
     if (fast.benchmark_mode == testing::FastBenchmarkMode::CpuOnly) return;
     advance_fast_crtc();
     while (fast.cycles >= fast.next_interrupt_cycle) {
+#if defined(CPCEXPLORER_STAGE4L2_Z80_CALLBACKS)
+        // z80_int() latches the line in the core until it is acknowledged.
+        // Assert it once on the gate-array edge instead of rewriting the same
+        // pending state before every instruction while interrupts are masked.
+        if (!machine.ga.video.intr) fast_z80_raise_int(fast.cpu);
+#endif
         machine.ga.video.intr = true;
         fast.next_interrupt_cycle += kGateArrayInterruptPeriod;
         ++fast.peripheral_dispatches;
@@ -613,9 +652,29 @@ static void fast_run_us(std::uint32_t microseconds) {
     fast.last_emulated_us = microseconds;
     fast.last_cpu_us = fast.last_event_us = fast.last_reconstruction_us = 0;
     fast.cycle_budget += static_cast<std::uint64_t>(microseconds) * 4;
+#if defined(CPCEXPLORER_STAGE4L2_Z80_CALLBACKS)
+    // Preserve an interrupt restored from a snapshot or raised before this
+    // run slice. Subsequent gate-array edges are latched in advance_fast_events().
+    if (machine.ga.video.intr) fast_z80_raise_int(fast.cpu);
+#endif
     while (fast.cycles < fast.cycle_budget) {
+#if !defined(CPCEXPLORER_STAGE4L2_Z80_CALLBACKS)
         if (machine.ga.video.intr) fast_z80_raise_int(fast.cpu);
+#endif
+#if defined(CPCEXPLORER_STAGE4L3_BOUNDED_Z80)
+        std::uint64_t boundary = fast.cycle_budget;
+        if (fast.benchmark_mode != testing::FastBenchmarkMode::CpuOnly) {
+            boundary = std::min(boundary, fast.next_crtc_line_cycle);
+            boundary = std::min(boundary, fast.next_interrupt_cycle);
+            boundary = std::min(boundary, fast.next_frame_cycle);
+        }
+        const auto remaining = boundary > fast.cycles ? boundary - fast.cycles : 1;
+        const int target = static_cast<int>(std::min<std::uint64_t>(
+            remaining, std::max<std::uint16_t>(1, fast.span_cycles)));
+        const int cycles = fast_z80_run_bounded(fast.cpu, target);
+#else
         const int cycles = fast_z80_step(fast.cpu);
+#endif
         fast.cycles += static_cast<std::uint64_t>(cycles);
         ++fast.instructions;
         if (fast.benchmark_mode != testing::FastBenchmarkMode::CpuOnly &&
@@ -679,6 +738,63 @@ static Diagnostics fast_diagnostics() {
 namespace testing {
 void set_fast_benchmark_mode(FastBenchmarkMode mode) { fast.benchmark_mode = mode; }
 void set_fast_audio_enabled(bool enabled) { fast.audio_enabled = enabled; }
+void set_fast_span_cycles(unsigned cycles) {
+#if defined(CPCEXPLORER_STAGE4L3_BOUNDED_Z80)
+    fast.span_cycles = static_cast<std::uint16_t>(std::clamp(cycles, 1U, 256U));
+#else
+    (void)cycles;
+#endif
+}
+
+static std::uint64_t digest_bytes(const void* data, std::size_t size) {
+    auto* bytes = static_cast<const std::uint8_t*>(data);
+    std::uint64_t hash = 1469598103934665603ULL;
+    for (std::size_t i = 0; i < size; ++i) {
+        hash ^= bytes[i];
+        hash *= 1099511628211ULL;
+    }
+    return hash;
+}
+
+static std::uint64_t digest_psg_semantics(const ay38910_t& psg) {
+    std::uint64_t hash = digest_bytes(psg.reg, sizeof(psg.reg));
+    const auto mix = [&hash](std::uint64_t value) {
+        for (unsigned i = 0; i < 8; ++i) {
+            hash ^= static_cast<std::uint8_t>(value >> (i * 8));
+            hash *= 1099511628211ULL;
+        }
+    };
+    mix(psg.tick); mix(psg.addr); mix(psg.pins);
+    for (const auto& tone : psg.tone) {
+        mix(tone.period); mix(tone.counter); mix(tone.bit);
+    }
+    mix(psg.noise.period); mix(psg.noise.counter); mix(psg.noise.rng); mix(psg.noise.bit);
+    mix(psg.env.period); mix(psg.env.counter); mix(psg.env.shape_holding);
+    mix(psg.env.shape_hold); mix(psg.env.shape_counter); mix(psg.env.shape_state);
+    mix(static_cast<std::uint32_t>(psg.sample_period));
+    mix(static_cast<std::uint32_t>(psg.sample_counter));
+    mix(psg.dcadj_pos);
+    return hash;
+}
+
+FastStateDigest fast_state_digest() {
+    fast_z80_state cpu{};
+    fast_z80_get_state(fast.cpu, &cpu);
+    return {
+        .machine_hash = digest_bytes(&machine, sizeof(machine)),
+        .gate_array_hash = digest_bytes(&machine.ga, sizeof(machine.ga)),
+        .crtc_hash = digest_bytes(&machine.crtc, sizeof(machine.crtc)),
+        .ppi_hash = digest_bytes(&machine.ppi, sizeof(machine.ppi)),
+        .psg_hash = digest_psg_semantics(machine.psg),
+        .ram_hash = digest_bytes(machine.ram, sizeof(machine.ram)),
+        .framebuffer_hash = digest_bytes(machine.fb, sizeof(machine.fb)),
+        .cycles = fast.cycles,
+        .af = cpu.af, .bc = cpu.bc, .de = cpu.de, .hl = cpu.hl,
+        .ix = cpu.ix, .iy = cpu.iy, .sp = cpu.sp, .pc = cpu.pc,
+        .i = cpu.i, .r = cpu.r, .im = cpu.im,
+        .iff1 = cpu.iff1, .iff2 = cpu.iff2, .halted = cpu.halted,
+    };
+}
 }  // namespace testing
 
 #endif
